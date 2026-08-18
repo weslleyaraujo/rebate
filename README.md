@@ -46,6 +46,15 @@ Or explicitly:
 | `--debug`     | off             | also save an annotated debug image                       |
 | `--suffix`    | `.frontier.jpg` | output filename suffix (use `.png` for lossless)         |
 
+## Plain crop (no border)
+
+Add `--plain` to output just the 3:2 image with no film border and no white
+canvas (at native resolution):
+
+```bash
+./frontier_crop.py .../*.jpg --out ./out --plain --suffix .plain.jpg
+```
+
 ## Portrait / vertical shots
 
 Works as-is. A 35mm frame is always 36x24mm (landscape) in the scan, so the

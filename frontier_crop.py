@@ -177,6 +177,83 @@ def detect_gate(gray):
     return left, top, right, bot
 
 
+def _row_profile(gray, y0, y1):
+    """Median and median-absolute-deviation per row (robust to sprocket dots)."""
+    meds = []
+    mads = []
+    for y in range(y0, y1):
+        row = gray[y, :].astype(np.float32)
+        med = float(np.median(row))
+        meds.append(med)
+        mads.append(float(np.median(np.abs(row - med))))
+    return np.array(meds), np.array(mads)
+
+
+def _photo_edge_top(gray, ts_bot):
+    """Find the actual photo top edge just below the top sprocket holes."""
+    h, w = gray.shape
+    t0 = int(ts_bot) + 2
+    t1 = min(h, t0 + 130)
+    if t1 - t0 < 25:
+        return None
+    meds, mads = _row_profile(gray, t0, t1)
+    med_base = float(np.percentile(meds, 15))
+    mad_base = float(np.percentile(mads, 15))
+    med_thr = med_base + max(6.0, 0.5 * med_base)
+    mad_thr = mad_base + max(3.0, 0.8 * mad_base)
+    idx = np.where((meds > med_thr) | (mads > mad_thr))[0]
+    if len(idx) == 0 or idx[0] > 110:
+        return None
+    return t0 + int(idx[0])
+
+
+def _photo_edge_bot(gray, bs_top):
+    """Find the actual photo bottom edge just above the bottom sprocket holes."""
+    h, w = gray.shape
+    b1 = int(bs_top) - 2
+    b0 = max(0, b1 - 130)
+    if b1 - b0 < 25:
+        return None
+    meds, mads = _row_profile(gray, b0, b1)
+    med_base = float(np.percentile(meds, 15))
+    mad_base = float(np.percentile(mads, 15))
+    med_thr = med_base + max(6.0, 0.5 * med_base)
+    mad_thr = mad_base + max(3.0, 0.8 * mad_base)
+    idx = np.where((meds > med_thr) | (mads > mad_thr))[0]
+    if len(idx) == 0 or (len(meds) - 1 - idx[-1]) > 110:
+        return None
+    return b0 + int(idx[-1])
+
+
+def detect_photo_gate(gray):
+    """Return (left, top, right, bottom) of the actual photo (no rebate).
+
+    Finds the real exposed-image boundary (brightness/texture step) and falls
+    back to a calibrated offset from the sprocket edges when the photo edge is
+    dark/uniform and therefore ambiguous.
+    """
+    h, w = gray.shape
+    ts_bot, bs_top = _sprocket_inner_edges(gray)
+
+    top = _photo_edge_top(gray, ts_bot) if ts_bot is not None else None
+    bot = _photo_edge_bot(gray, bs_top) if bs_top is not None else None
+
+    # Calibrated fallback: the unexposed border between sprockets and gate is
+    # ~44-48px in this rig. Err slightly toward over-cropping (no border).
+    if top is None and ts_bot is not None:
+        top = ts_bot + 46
+    if bot is None and bs_top is not None:
+        bot = bs_top - 48
+
+    if top is None or bot is None or (bot - top) < 3400:
+        return detect_gate(gray)
+
+    gate_h = bot - top
+    gate_w = gate_h * ASPECT
+    center_x = _detect_center_x(gray, top, bot)
+    return center_x - gate_w / 2.0, top, center_x + gate_w / 2.0, bot
+
+
 def _sprocket_centers(gray, top, bot):
     """Return candidate x-centers of sprocket holes above/below the gate."""
     top_cand, bot_cand = _sprocket_candidates(gray)
@@ -354,12 +431,30 @@ def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
 
 def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
             roughness, feather, seed, quality, sprocket_chance,
-            radius_jitter, debug=False, suffix=".frontier.jpg"):
+            radius_jitter, plain=False, debug=False, suffix=".frontier.jpg"):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
         print(f"!! cannot read {path}", file=sys.stderr)
         return None
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    if plain:
+        left, top, right, bot = detect_photo_gate(gray)
+        cl = max(0, int(round(left)))
+        cr = min(img.shape[1], int(round(right)))
+        ct = max(0, int(round(top)))
+        cb = min(img.shape[0], int(round(bot)))
+        crop = img[ct:cb, cl:cr]
+        out_name = os.path.splitext(os.path.basename(path))[0] + suffix
+        out_path = os.path.join(out_dir, out_name)
+        if out_name.lower().endswith(".png"):
+            cv2.imwrite(out_path, crop)
+        else:
+            cv2.imwrite(out_path, crop, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        print(f"  {os.path.basename(path)}")
+        print(f"    photo x[{cl}..{cr}] y[{ct}..{cb}] "
+              f"({cr-cl}x{cb-ct}, ratio {(cr-cl)/(cb-ct):.2f}) -> {out_path}")
+        return out_path
 
     left, top, right, bot = detect_gate(gray)
     crop_seed = None if seed is None else seed + 100000
@@ -427,6 +522,9 @@ def main():
     ap.add_argument("--sprocket-chance", type=float, default=0.5,
                     help="probability (0-1) that a tiny sliver of the top "
                          "sprocket holes is visible (default 0.5)")
+    ap.add_argument("--plain", action="store_true",
+                    help="crop just the 3:2 image with no border and no white "
+                         "canvas")
     ap.add_argument("--debug", action="store_true",
                     help="also save an annotated debug image")
     ap.add_argument("--suffix", default=".frontier.jpg",
@@ -439,7 +537,7 @@ def main():
         process(path, args.out, args.size, args.margin, args.border,
                 args.radius, args.roughness, args.feather, args.seed,
                 args.quality, args.sprocket_chance, args.radius_jitter,
-                args.debug, args.suffix)
+                args.plain, args.debug, args.suffix)
 
 
 if __name__ == "__main__":
