@@ -429,7 +429,10 @@ def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
     else:
         factor = 1.0
     radius = max(0, int(round(base_radius * factor)))
-    mask = _organic_mask(dw, dh, radius, roughness, feather, seed)
+    # roughness/feather are defined at native scale; scale them so a downscaled
+    # output looks the same as native rather than proportionally softer.
+    mask = _organic_mask(dw, dh, radius, roughness * scale, feather * scale,
+                         seed)
 
     canvas = np.full((canvas_h, canvas_w, 3), 255, np.uint8)
     ox = (canvas_w - dw) // 2
