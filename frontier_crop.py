@@ -228,30 +228,40 @@ def _photo_edge_bot(gray, bs_top):
 def detect_photo_gate(gray):
     """Return (left, top, right, bottom) of the actual photo (no rebate).
 
-    Finds the real exposed-image boundary (brightness/texture step) and falls
-    back to a calibrated offset from the sprocket edges when the photo edge is
-    dark/uniform and therefore ambiguous.
+    Finds the real exposed-image boundary (brightness/texture step) and then
+    trims a small safety margin inside it so no unexposed film border remains.
     """
     h, w = gray.shape
     ts_bot, bs_top = _sprocket_inner_edges(gray)
 
-    top = _photo_edge_top(gray, ts_bot) if ts_bot is not None else None
-    bot = _photo_edge_bot(gray, bs_top) if bs_top is not None else None
+    if ts_bot is not None and bs_top is not None:
+        top = _photo_edge_top(gray, ts_bot)
+        bot = _photo_edge_bot(gray, bs_top)
+        # Calibrated fallback: the unexposed border between sprockets and gate
+        # is ~44-70px in this rig. Err toward over-cropping (no border).
+        if top is None:
+            top = ts_bot + 60
+        if bot is None:
+            bot = bs_top - 64
+        inset = 15
+    else:
+        # Sprocket detection failed (very dark scan): use the hstd edges with
+        # a generous inset so the unexposed border is definitely removed.
+        top, bot = _gate_from_hstd(gray)
+        inset = 40
 
-    # Calibrated fallback: the unexposed border between sprockets and gate is
-    # ~44-48px in this rig. Err slightly toward over-cropping (no border).
-    if top is None and ts_bot is not None:
-        top = ts_bot + 46
-    if bot is None and bs_top is not None:
-        bot = bs_top - 48
-
-    if top is None or bot is None or (bot - top) < 3400:
+    if (bot - top) < 3400:
         return detect_gate(gray)
+
+    top += inset
+    bot -= inset
 
     gate_h = bot - top
     gate_w = gate_h * ASPECT
     center_x = _detect_center_x(gray, top, bot)
-    return center_x - gate_w / 2.0, top, center_x + gate_w / 2.0, bot
+    left = center_x - gate_w / 2.0 + inset
+    right = center_x + gate_w / 2.0 - inset
+    return left, top, right, bot
 
 
 def _sprocket_centers(gray, top, bot):
