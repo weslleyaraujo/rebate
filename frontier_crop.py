@@ -431,7 +431,7 @@ def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
 
 def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
             roughness, feather, seed, quality, sprocket_chance,
-            radius_jitter, plain=False, debug=False, suffix=".frontier.jpg"):
+            radius_jitter, plain=False, debug=False, suffix=".bordered.jpg"):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
         print(f"!! cannot read {path}", file=sys.stderr)
@@ -527,8 +527,8 @@ def main():
                          "canvas")
     ap.add_argument("--debug", action="store_true",
                     help="also save an annotated debug image")
-    ap.add_argument("--suffix", default=".frontier.jpg",
-                    help="output filename suffix (default .frontier.jpg)")
+    ap.add_argument("--suffix", default=".bordered.jpg",
+                    help="output filename suffix (default .bordered.jpg)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)

@@ -44,7 +44,7 @@ Or explicitly:
 | `--seed`      | random          | random seed for edge texture (for reproducibility)       |
 | `--quality`   | `98`            | JPEG quality 1-100                                       |
 | `--debug`     | off             | also save an annotated debug image                       |
-| `--suffix`    | `.frontier.jpg` | output filename suffix (use `.png` for lossless)         |
+| `--suffix`    | `.bordered.jpg` | output filename suffix (use `.png` for lossless)         |
 
 ## Plain crop (no border)
 
