@@ -11,6 +11,22 @@ than a drawn frame.
 By default the output is at **native resolution** (no resampling, no quality
 loss) — typically ~6300x4500px.
 
+## Examples
+
+Same scan, different settings. "Natural" runs use the defaults with different
+random seeds; "extremes" show the knobs turned up/down.
+
+| Natural (3 random seeds) | Extremes |
+|---|---|
+| <img src="samples/bordered-01.jpg" width="260"> | <img src="samples/bordered-sprockets.jpg" width="260"> |
+| <img src="samples/bordered-02.jpg" width="260"> | <img src="samples/bordered-sharp.jpg" width="260"> |
+| <img src="samples/bordered-03.jpg" width="260"> | <img src="samples/plain-01.jpg" width="260"> |
+
+Left column: default bordered look (each row is a different `--seed`).
+Right column, top to bottom: sprocket slivers forced (`--sprocket-chance 1`),
+no rounding/no texture (`--radius 0 --roughness 0 --feather 0`), and no border
+at all (`--plain`).
+
 ## Run
 
 The script is executable and pins `/opt/homebrew/bin/python3.11` (which has
