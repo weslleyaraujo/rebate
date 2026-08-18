@@ -25,12 +25,13 @@ Input (full-sprocket DSLR scan) and the two main outputs:
 |---|---|
 | <img src="samples/bordered-01.jpg" width="260"> | <img src="samples/bordered-sprockets.jpg" width="260"> |
 | <img src="samples/bordered-02.jpg" width="260"> | <img src="samples/bordered-sharp.jpg" width="260"> |
-| <img src="samples/bordered-03.jpg" width="260"> | |
+| <img src="samples/bordered-03.jpg" width="260"> | <img src="samples/bordered-round.jpg" width="260"> |
 
 Left column: the default bordered look — the three images use identical
 settings, only a different random seed. Right column, top to bottom: sprocket
-slivers forced (`--sprocket-chance 1`) and no rounding/no texture
-(`--radius 0 --roughness 0 --feather 0`).
+slivers forced (`--sprocket-chance 1`), no rounding/no texture
+(`--radius 0 --roughness 0 --feather 0`), and very rounded corners
+(`--radius 0.06 --radius-jitter 0`).
 
 ## Run
 
