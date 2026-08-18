@@ -13,23 +13,36 @@ loss) — typically ~6300x4500px.
 
 ## Examples
 
-Input (full-sprocket DSLR scan) and what the tool produces:
+Input (full-sprocket DSLR scan) and the two main outputs:
 
-| Input | Output (default) |
-|---|---|
-| <img src="samples/input.jpg" width="320"> | <img src="samples/bordered-01.jpg" width="320"> |
+| Input | Bordered (default) | Plain (no border) |
+|---|---|---|
+| <img src="samples/input.jpg" width="240"> | <img src="samples/bordered-01.jpg" width="240"> | <img src="samples/plain-01.jpg" width="240"> |
 
-Variations on the same scan:
+### What are "seeds"?
 
-| Natural (3 random seeds) | Extremes |
+The bordered look has a few random details — the edge texture/roughness, the
+corner rounding amount, and whether a tiny sprocket sliver shows. A **seed** is
+just the random number that picks those details.
+
+- Same settings, **different seed** → a slightly different (but equivalent) look.
+- Same settings, **same seed** → identical output every run.
+
+Pass `--seed N` to lock a look you like; leave it out and every run is a fresh
+roll of the dice.
+
+### Variations on the same scan
+
+| Natural (3 different seeds) | Extremes |
 |---|---|
 | <img src="samples/bordered-01.jpg" width="260"> | <img src="samples/bordered-sprockets.jpg" width="260"> |
 | <img src="samples/bordered-02.jpg" width="260"> | <img src="samples/bordered-sharp.jpg" width="260"> |
 | <img src="samples/bordered-03.jpg" width="260"> | |
 
-Left column: default bordered look (each row is a different `--seed`).
-Right column: sprocket slivers forced (`--sprocket-chance 1`) and no
-rounding/no texture (`--radius 0 --roughness 0 --feather 0`).
+Left column: the default bordered look — the three images use identical
+settings, only a different random seed. Right column, top to bottom: sprocket
+slivers forced (`--sprocket-chance 1`) and no rounding/no texture
+(`--radius 0 --roughness 0 --feather 0`).
 
 ## Run
 
