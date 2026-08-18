@@ -1,21 +1,21 @@
 #!/opt/homebrew/bin/python3.11
 """
-Frontier-style border scanner.
+Film border scanner.
 
 Takes DSLR scans of 35mm film shot "with full sprockets" (already-positive,
 i.e. inverted) and crops the real film frame together with its natural film
-border (rebate), rounds the corners slightly to mimic the Fuji Frontier film
-gate, and composites the result onto a white canvas (default 3000x3000).
+border (rebate), rounds the corners slightly, and composites the result onto
+a white canvas.
 
 Why "natural": instead of drawing a fake border, we use the actual unexposed
 film border that is already present in the scan.
 
 Usage:
-    python3 frontier_crop.py INPUT... [--out DIR] [options]
+    python3 border_crop.py INPUT... [--out DIR] [options]
 
 Examples:
-    python3 frontier_crop.py SAMPLE.jpg
-    python3 frontier_crop.py Leica_*.jpg --out ./out --size 3000 --border 0.015
+    python3 border_crop.py SAMPLE.jpg
+    python3 border_crop.py Leica_*.jpg --out ./out --size 3000 --border 0.015
 """
 
 import argparse
@@ -506,7 +506,7 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Frontier-style border cropper")
+    ap = argparse.ArgumentParser(description="Film border cropper")
     ap.add_argument("inputs", nargs="+", help="input image files")
     ap.add_argument("--out", default=".", help="output directory")
     ap.add_argument("--size", type=int, default=0,

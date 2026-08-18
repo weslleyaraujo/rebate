@@ -1,8 +1,12 @@
-# Frontier-style border cropper
+# Film border scanner
 
 Takes DSLR scans of 35mm film shot "with full sprockets" (already-positive /
-inverted) and produces Frontier-style scans: the real frame + its natural film
-rebate border, slightly rounded + softly irregular edges, on a white canvas.
+inverted) and produces bordered scans: the real frame + its natural film
+rebate border, rounded corners with soft/irregular edges, on a white canvas.
+
+The look mimics the classic Fuji Frontier "border" scan (frame + unexposed
+film border on white), but it's built from the real border in your scan rather
+than a drawn frame.
 
 By default the output is at **native resolution** (no resampling, no quality
 loss) — typically ~6300x4500px.
@@ -13,19 +17,19 @@ The script is executable and pins `/opt/homebrew/bin/python3.11` (which has
 OpenCV + numpy — the default `python3` on this Mac is 3.14 and does not):
 
 ```bash
-./frontier_crop.py /Users/weslleyaraujo/Desktop/frontier-border/bar/*.jpg --out ./out
+./border_crop.py /Users/weslleyaraujo/Desktop/frontier-border/bar/*.jpg --out ./out
 ```
 
 Single file:
 
 ```bash
-./frontier_crop.py SAMPLE.jpg --out ./out --debug
+./border_crop.py SAMPLE.jpg --out ./out --debug
 ```
 
 Or explicitly:
 
 ```bash
-/opt/homebrew/bin/python3.11 frontier_crop.py SAMPLE.jpg --out ./out
+/opt/homebrew/bin/python3.11 border_crop.py SAMPLE.jpg --out ./out
 ```
 
 ## Options
@@ -40,9 +44,10 @@ Or explicitly:
 | `--radius-jitter` | `0.25`       | random +/- variation of corner radius (fraction)         |
 | `--roughness` | `0.5`           | edge irregularity in px (0 = perfectly straight)         |
 | `--feather`   | `2.5`           | edge softness in px (0 = hard edge)                      |
-| `--sprocket-chance` | `0.5`      | chance (0-1) a tiny sliver of top sprockets is visible   |
+| `--sprocket-chance` | `0.5`      | chance (0-1) a tiny sliver of sprockets is visible, per side (top/bottom) |
 | `--seed`      | random          | random seed for edge texture (for reproducibility)       |
 | `--quality`   | `98`            | JPEG quality 1-100                                       |
+| `--plain`     | off             | crop just the 3:2 image, no border, no white canvas      |
 | `--debug`     | off             | also save an annotated debug image                       |
 | `--suffix`    | `.bordered.jpg` | output filename suffix (use `.png` for lossless)         |
 
@@ -52,7 +57,7 @@ Add `--plain` to output just the 3:2 image with no film border and no white
 canvas (at native resolution):
 
 ```bash
-./frontier_crop.py .../*.jpg --out ./out --plain --suffix .plain.jpg
+./border_crop.py .../*.jpg --out ./out --plain --suffix .plain.jpg
 ```
 
 ## Portrait / vertical shots
