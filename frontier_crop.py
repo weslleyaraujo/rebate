@@ -302,10 +302,9 @@ def crop_with_border(gray, left, top, right, bot, border_frac,
                      sprocket_chance, seed):
     """Expand the gate by border_frac * gate_height.
 
-    The bottom always stops just inside the bottom sprocket holes. On top, the
-    crop randomly either stops just below the top sprocket holes (no sprockets
-    visible) or dips a small, random amount into them so a tiny sliver of
-    sprocket is sometimes visible.
+    On top and bottom independently, the crop randomly either stops just
+    inside the sprocket holes (clean) or dips a small, random amount into them
+    so a tiny sliver of sprocket is sometimes visible on that side.
     """
     h, w = gray.shape
     gate_h = bot - top
@@ -327,7 +326,11 @@ def crop_with_border(gray, left, top, right, bot, border_frac,
             crop_top = max(crop_top, int(ts_bot) + 4)
 
     if bs_top is not None:
-        crop_bot = min(crop_bot, int(bs_top) - 3)
+        if rng.random() < sprocket_chance:
+            dip = rng.uniform(0.002, 0.012) * gate_h
+            crop_bot = min(h, int(round(bs_top + dip)))
+        else:
+            crop_bot = min(crop_bot, int(bs_top) - 4)
 
     return crop_left, crop_top, crop_right, crop_bot
 
@@ -530,8 +533,9 @@ def main():
     ap.add_argument("--quality", type=int, default=98,
                     help="JPEG quality 1-100 (default 98)")
     ap.add_argument("--sprocket-chance", type=float, default=0.5,
-                    help="probability (0-1) that a tiny sliver of the top "
-                         "sprocket holes is visible (default 0.5)")
+                    help="probability (0-1) that a tiny sliver of sprocket "
+                         "holes is visible, per side (top/bottom) "
+                         "(default 0.5)")
     ap.add_argument("--plain", action="store_true",
                     help="crop just the 3:2 image with no border and no white "
                          "canvas")
