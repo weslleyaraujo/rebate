@@ -28,8 +28,11 @@ just the random number that picks those details.
 - Same settings, **different seed** → a slightly different (but equivalent) look.
 - Same settings, **same seed** → identical output every run.
 
-Pass `--seed N` to lock a look you like; leave it out and every run is a fresh
-roll of the dice.
+`N` is just any whole number (an integer) — `--seed 1`, `--seed 42`, `--seed
+999` all work and the number itself means nothing. It only sets the starting
+point of the random generator, so a given number always replays the same
+random details. Pass `--seed N` to lock a look you like; leave it out and
+every run is a fresh roll of the dice.
 
 ### Variations on the same scan
 
