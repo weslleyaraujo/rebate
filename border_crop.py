@@ -530,8 +530,8 @@ def main():
                     help="edge softness in px (default 2.5)")
     ap.add_argument("--seed", type=int, default=None,
                     help="random seed for edge texture (default: random)")
-    ap.add_argument("--quality", type=int, default=98,
-                    help="JPEG quality 1-100 (default 98)")
+    ap.add_argument("--quality", type=int, default=100,
+                    help="JPEG quality 1-100 (default 100)")
     ap.add_argument("--sprocket-chance", type=float, default=0.5,
                     help="probability (0-1) that a tiny sliver of sprocket "
                          "holes is visible, per side (top/bottom) "

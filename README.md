@@ -13,19 +13,23 @@ loss) — typically ~6300x4500px.
 
 ## Examples
 
-Same scan, different settings. "Natural" runs use the defaults with different
-random seeds; "extremes" show the knobs turned up/down.
+Input (full-sprocket DSLR scan) and what the tool produces:
+
+| Input | Output (default) |
+|---|---|
+| <img src="samples/input.jpg" width="320"> | <img src="samples/bordered-01.jpg" width="320"> |
+
+Variations on the same scan:
 
 | Natural (3 random seeds) | Extremes |
 |---|---|
 | <img src="samples/bordered-01.jpg" width="260"> | <img src="samples/bordered-sprockets.jpg" width="260"> |
 | <img src="samples/bordered-02.jpg" width="260"> | <img src="samples/bordered-sharp.jpg" width="260"> |
-| <img src="samples/bordered-03.jpg" width="260"> | <img src="samples/plain-01.jpg" width="260"> |
+| <img src="samples/bordered-03.jpg" width="260"> | |
 
 Left column: default bordered look (each row is a different `--seed`).
-Right column, top to bottom: sprocket slivers forced (`--sprocket-chance 1`),
-no rounding/no texture (`--radius 0 --roughness 0 --feather 0`), and no border
-at all (`--plain`).
+Right column: sprocket slivers forced (`--sprocket-chance 1`) and no
+rounding/no texture (`--radius 0 --roughness 0 --feather 0`).
 
 ## Run
 
@@ -62,7 +66,7 @@ Or explicitly:
 | `--feather`   | `2.5`           | edge softness in px (0 = hard edge)                      |
 | `--sprocket-chance` | `0.5`      | chance (0-1) a tiny sliver of sprockets is visible, per side (top/bottom) |
 | `--seed`      | random          | random seed for edge texture (for reproducibility)       |
-| `--quality`   | `98`            | JPEG quality 1-100                                       |
+| `--quality`   | `100`           | JPEG quality 1-100                                       |
 | `--plain`     | off             | crop just the 3:2 image, no border, no white canvas      |
 | `--debug`     | off             | also save an annotated debug image                       |
 | `--suffix`    | `.bordered.jpg` | output filename suffix (use `.png` for lossless)         |
@@ -75,6 +79,8 @@ canvas (at native resolution):
 ```bash
 ./border_crop.py .../*.jpg --out ./out --plain --suffix .plain.jpg
 ```
+
+<img src="samples/plain-01.jpg" width="320">
 
 ## Portrait / vertical shots
 
