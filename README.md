@@ -117,3 +117,9 @@ final image afterwards if you want to view it upright.
    canvas at native resolution.
 
 Requires: `opencv-python-headless` and `numpy`.
+
+## Tests
+
+```bash
+/opt/homebrew/bin/python3.11 -m unittest discover -s tests -p 'test_*.py'
+```
