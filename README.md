@@ -1,4 +1,4 @@
-# Film border scanner
+# rebate
 
 Takes DSLR scans of 35mm film shot "with full sprockets" (already-positive /
 inverted) and produces bordered scans: the real frame + its natural film
@@ -38,19 +38,19 @@ The script is executable and pins `/opt/homebrew/bin/python3.11` (which has
 OpenCV + numpy — the default `python3` on this Mac is 3.14 and does not):
 
 ```bash
-./border_crop.py /Users/weslleyaraujo/Desktop/frontier-border/bar/*.jpg --out ./out
+./rebate.py /Users/weslleyaraujo/Desktop/frontier-border/bar/*.jpg --out ./out
 ```
 
 Single file:
 
 ```bash
-./border_crop.py SAMPLE.jpg --out ./out --debug
+./rebate.py SAMPLE.jpg --out ./out --debug
 ```
 
 Or explicitly:
 
 ```bash
-/opt/homebrew/bin/python3.11 border_crop.py SAMPLE.jpg --out ./out
+/opt/homebrew/bin/python3.11 rebate.py SAMPLE.jpg --out ./out
 ```
 
 ## Options
@@ -93,7 +93,7 @@ Add `--plain` to output just the 3:2 image with no film border and no white
 canvas (at native resolution):
 
 ```bash
-./border_crop.py .../*.jpg --out ./out --plain --suffix .plain.jpg
+./rebate.py .../*.jpg --out ./out --plain --suffix .plain.jpg
 ```
 
 <img src="samples/plain-01.jpg" width="320">
