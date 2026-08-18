@@ -523,11 +523,11 @@ def main():
     ap.add_argument("--radius-jitter", type=float, default=0.25,
                     help="random +/- variation of the corner radius, as a "
                          "fraction (default 0.25)")
-    ap.add_argument("--roughness", type=float, default=0.5,
+    ap.add_argument("--roughness", type=float, default=0.25,
                     help="edge irregularity in px (0 = perfectly straight; "
-                         "default 0.5)")
-    ap.add_argument("--feather", type=float, default=2.5,
-                    help="edge softness in px (default 2.5)")
+                         "default 0.25)")
+    ap.add_argument("--feather", type=float, default=1.0,
+                    help="edge softness in px (default 1.0)")
     ap.add_argument("--seed", type=int, default=None,
                     help="random seed for edge texture (default: random)")
     ap.add_argument("--quality", type=int, default=100,
