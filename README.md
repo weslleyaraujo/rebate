@@ -64,8 +64,8 @@ Or explicitly:
 | `--border`    | `0.012`         | film border kept around the gate (fraction of gate height)|
 | `--radius`    | `0.015`         | corner radius (fraction of final crop size)              |
 | `--radius-jitter` | `0.25`       | random +/- variation of corner radius (fraction)         |
-| `--roughness` | `0.25`          | edge irregularity in px (0 = perfectly straight)         |
-| `--feather`   | `1.0`           | edge softness in px (0 = hard edge)                      |
+| `--roughness` | `0.5`           | edge irregularity in px (0 = perfectly straight)         |
+| `--feather`   | `3.0`           | edge softness in px (0 = hard edge)                      |
 | `--sprocket-chance` | `0.5`      | chance (0-1) a tiny sliver of sprockets is visible, per side (top/bottom) |
 | `--seed`      | random          | random seed for edge texture (for reproducibility)       |
 | `--quality`   | `100`           | JPEG quality 1-100                                       |
