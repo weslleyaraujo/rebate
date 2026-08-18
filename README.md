@@ -19,21 +19,6 @@ Input (full-sprocket DSLR scan) and the two main outputs:
 |---|---|---|
 | <img src="samples/input.jpg" width="240"> | <img src="samples/bordered-01.jpg" width="240"> | <img src="samples/plain-01.jpg" width="240"> |
 
-### What are "seeds"?
-
-The bordered look has a few random details — the edge texture/roughness, the
-corner rounding amount, and whether a tiny sprocket sliver shows. A **seed** is
-just the random number that picks those details.
-
-- Same settings, **different seed** → a slightly different (but equivalent) look.
-- Same settings, **same seed** → identical output every run.
-
-`N` is just any whole number (an integer) — `--seed 1`, `--seed 42`, `--seed
-999` all work and the number itself means nothing. It only sets the starting
-point of the random generator, so a given number always replays the same
-random details. Pass `--seed N` to lock a look you like; leave it out and
-every run is a fresh roll of the dice.
-
 ### Variations on the same scan
 
 | Natural (3 different seeds) | Extremes |
@@ -86,6 +71,21 @@ Or explicitly:
 | `--plain`     | off             | crop just the 3:2 image, no border, no white canvas      |
 | `--debug`     | off             | also save an annotated debug image                       |
 | `--suffix`    | `.bordered.jpg` | output filename suffix (use `.png` for lossless)         |
+
+### What are "seeds"?
+
+The bordered look has a few random details — the edge texture/roughness, the
+corner rounding amount, and whether a tiny sprocket sliver shows. A **seed** is
+just the random number that picks those details.
+
+- Same settings, **different seed** → a slightly different (but equivalent) look.
+- Same settings, **same seed** → identical output every run.
+
+`N` is just any whole number (an integer) — `--seed 1`, `--seed 42`, `--seed
+999` all work and the number itself means nothing. It only sets the starting
+point of the random generator, so a given number always replays the same
+random details. Pass `--seed N` to lock a look you like; leave it out and
+every run is a fresh roll of the dice.
 
 ## Plain crop (no border)
 
