@@ -101,10 +101,15 @@ canvas (at native resolution):
 
 ## Portrait / vertical shots
 
-Works as-is. A 35mm frame is always 36x24mm (landscape) in the scan, so the
-script always crops the landscape frame correctly even if the photo inside was
-shot vertically — the content is just rotated 90° within the frame. Rotate the
-final image afterwards if you want to view it upright.
+Two different situations are handled:
+
+1. **Vertical photo inside a landscape scan** (camera held sideways): works
+   as-is — a 35mm frame is always 36x24mm (landscape), so the script crops the
+   landscape frame correctly even if the content is rotated 90° inside it.
+2. **The whole scan file is portrait** (someone already rotated it 90° to view
+   it upright): the script now auto-detects this, rotates it in memory to
+   landscape for detection, processes normally, then rotates the output back
+   to portrait. The original file is never modified.
 
 ## How it works
 

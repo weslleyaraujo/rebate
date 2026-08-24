@@ -452,6 +452,15 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
     if img is None:
         print(f"!! cannot read {path}", file=sys.stderr)
         return None
+
+    # Portrait scans are the same film strip rotated 90 degrees. The detector
+    # expects a landscape strip (sprocket holes along the top/bottom), so we
+    # rotate in memory, process as usual, then rotate the output back. The
+    # source file is never modified.
+    portrait = img.shape[0] > img.shape[1]
+    if portrait:
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     if plain:
@@ -461,6 +470,8 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
         ct = max(0, int(round(top)))
         cb = min(img.shape[0], int(round(bot)))
         crop = img[ct:cb, cl:cr]
+        if portrait:
+            crop = cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE)
         out_name = os.path.splitext(os.path.basename(path))[0] + suffix
         out_path = os.path.join(out_dir, out_name)
         if out_name.lower().endswith(".png"):
@@ -482,6 +493,8 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
         cv2.rectangle(dbg, (int(left), int(top)), (int(right), int(bot)),
                       (0, 255, 0), 6)
         cv2.rectangle(dbg, (cl, ct), (cr, cb), (0, 0, 255), 6)
+        if portrait:
+            dbg = cv2.rotate(dbg, cv2.ROTATE_90_COUNTERCLOCKWISE)
         out_dbg = os.path.join(out_dir,
                                os.path.splitext(os.path.basename(path))[0]
                                + ".debug.jpg")
@@ -491,6 +504,8 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
     crop = img[ct:cb, cl:cr]
     result = compose_on_white(crop, size, margin_frac, radius_frac, roughness,
                               feather, seed, radius_jitter)
+    if portrait:
+        result = cv2.rotate(result, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
     out_name = os.path.splitext(os.path.basename(path))[0] + suffix
     out_path = os.path.join(out_dir, out_name)

@@ -89,6 +89,62 @@ class TestDetection(unittest.TestCase):
         self.assertGreaterEqual(bot, 4340)
 
 
+class TestPortrait(unittest.TestCase):
+    @staticmethod
+    def _center_crop(g, frac=0.5):
+        h, w = g.shape
+        ch, cw = int(h * frac), int(w * frac)
+        return g[(h - ch) // 2:(h - ch) // 2 + ch,
+                 (w - cw) // 2:(w - cw) // 2 + cw]
+
+    @staticmethod
+    def _ncc(a, b):
+        a = a.astype(np.float32)
+        b = b.astype(np.float32)
+        a -= a.mean()
+        b -= b.mean()
+        denom = float(np.sqrt((a * a).sum() * (b * b).sum()))
+        return float((a * b).sum() / denom) if denom > 1e-9 else 0.0
+
+    @staticmethod
+    def _make_gradient_scan():
+        """Like make_scan, but the gate is a strong vertical gradient so the
+        orientation is unambiguous (noise alone doesn't survive resize)."""
+        w, h, pitch, gate_top, gate_bot = 5795, 4854, 730, 620, 4400
+        img = np.full((h, w), 15, np.uint8)
+        for x in range(0, w, pitch):
+            cv2.ellipse(img, (x + pitch // 2, 350), (160, 160), 0, 0, 360, 255, -1)
+            cv2.ellipse(img, (x + pitch // 2, 4640), (160, 160), 0, 0, 360, 255, -1)
+        rows = np.arange(gate_top, gate_bot, dtype=np.float32)
+        ramp = (50 + 200 * (rows - gate_top) / (gate_bot - gate_top)).astype(np.uint8)
+        img[gate_top:gate_bot, :] = ramp[:, None]
+        return img
+
+    def test_portrait_scan_rotated_back(self):
+        import tempfile
+        scan = self._make_gradient_scan()
+        # Simulate a scan the user already flipped into portrait (90 deg CW).
+        portrait = cv2.rotate(scan, cv2.ROTATE_90_CLOCKWISE)
+        portrait_bgr = cv2.cvtColor(portrait, cv2.COLOR_GRAY2BGR)
+        with tempfile.TemporaryDirectory() as d:
+            in_path = os.path.join(d, "in.jpg")
+            cv2.imwrite(in_path, portrait_bgr)
+            out_path = rebate.process(in_path, d, 0, 0.05, 0.012, 0.015,
+                                      0.0, 0.0, 42, 100, 0.0, 0.0,
+                                      plain=True, debug=False)
+            self.assertIsNotNone(out_path)
+            out = cv2.imread(out_path, cv2.IMREAD_GRAYSCALE)
+            # Output should be portrait again, matching the input orientation.
+            self.assertGreater(out.shape[0], out.shape[1])
+
+            p = cv2.cvtColor(portrait_bgr, cv2.COLOR_BGR2GRAY)
+            p = self._center_crop(p)
+            o = self._center_crop(out)
+            o = cv2.resize(o, (p.shape[1], p.shape[0]))
+            self.assertGreater(self._ncc(p, o),
+                               self._ncc(p, cv2.rotate(o, cv2.ROTATE_180)))
+
+
 class TestCompose(unittest.TestCase):
     def test_compose_square_canvas_and_white_corners(self):
         crop = np.full((300, 450, 3), 80, np.uint8)
