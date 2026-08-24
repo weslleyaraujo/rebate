@@ -113,12 +113,24 @@ Two different situations are handled:
 
 ## How it works
 
-1. Finds the sprocket holes (bright blobs at the film's top/bottom edges) and
-   fits them to the ~4.75mm periodic grid to discard dust/photo content.
-2. Gate (the 36x24mm frame) = between the top and bottom sprocket rows.
-3. Horizontal centre from the sprocket holes (top/bottom cross-checked).
-4. Crops the gate plus a thin band of the real unexposed film border.
-5. Applies a rounded, slightly wavy, feathered edge and pastes onto a white
+Detection is scale-invariant — it derives everything from the film's physical
+geometry (36x24mm frame, 4.75mm sprocket pitch) rather than hard-coded pixel
+sizes, so it works on scans of any resolution and on negative, B&W and
+positive (slide) film.
+
+1. Looks for sprocket holes in the outer bands and fits them to the periodic
+   ~4.75mm grid to learn the scan scale (pitch in px) and the two sprocket
+   rows, discarding dust and photo content.
+2. Finds the exposed 36x24mm gate either as the bright/textured region between
+   the sprocket rows, or (for dark/underexposed frames) from the pitch-implied
+   3:2 geometry centred between the rows.
+3. If no usable sprockets are present (holes cropped off), falls back to a
+   brightness/texture step over the whole strip, cross-checked against the
+   expected 3:2 height.
+4. Horizontal centre from the sprocket holes (top/bottom cross-checked).
+5. Crops the gate plus a thin band of the real unexposed film border (the
+   sprocket sliver is only used when the rebate is thin).
+6. Applies a rounded, slightly wavy, feathered edge and pastes onto a white
    canvas at native resolution.
 
 Requires: `opencv-python-headless` and `numpy`.

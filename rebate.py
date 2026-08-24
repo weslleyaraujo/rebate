@@ -27,45 +27,29 @@ import numpy as np
 
 # 35mm full-frame is 36 x 24 mm -> 3:2 aspect ratio.
 ASPECT = 1.5
-# Sprocket hole pitch for 35mm film (4.75 mm). We learn it in pixels per image.
+# Physical 35mm still-film dimensions (mm). These are the scale-invariant
+# anchors: whatever the scan resolution, the gate is 24 mm tall and the
+# sprocket pitch is 4.75 mm (the 36 mm width follows from the 3:2 aspect).
+GATE_H_MM = 24.0
+SPROCKET_PITCH_MM = 4.75
+# Fallback sprocket pitch in pixels (only used by _grid_aligned).
 SPROCKET_PITCH_FALLBACK = 730
-
-
-def _row_hstd(gray, scale=10):
-    """Horizontal std per row on a downscaled copy (sprocket bands have high
-    horizontal variance; the thin uniform rebate at the gate edge has low)."""
-    h, w = gray.shape
-    small = cv2.resize(gray, (max(1, w // scale), max(1, h // scale)),
-                       interpolation=cv2.INTER_AREA)
-    hstd = small.std(axis=1).astype(np.float64)
-    hstd = np.convolve(hstd, np.ones(3) / 3, mode="same")
-    return hstd, scale
-
-
-def _refine_row(gray, y0, radius=60):
-    """Refine a gate edge estimate at full resolution by minimising row std."""
-    h, _ = gray.shape
-    lo, hi = max(0, y0 - radius), min(h, y0 + radius)
-    best, best_v = y0, float("inf")
-    for y in range(lo, hi):
-        v = float(gray[y, :].std())
-        if v < best_v:
-            best_v, best = v, y
-    return best
 
 
 def _sprocket_candidates(gray):
     """Return (top_holes, bottom_holes) candidate sprocket holes.
 
-    Sprocket holes are bright, medium-sized, roughly oval blobs. They live at
-    the very top and bottom of the film strip (outside the 24mm gate area).
-    We look only in those two horizontal bands and use an adaptive brightness
-    threshold so dark scans still work.
+    Sprocket holes are bright, medium-sized blobs in the outer bands of the
+    film strip (outside the 24mm gate). Size ranges are expressed relative to
+    the expected sprocket pitch (about w / 7.58 for a full-width 35mm frame)
+    so the same code works at any scan resolution while still rejecting the
+    small irregular fragments of photo content and dust.
     """
     h, w = gray.shape
+    pitch_est = w / 7.58  # 36mm frame ~= 7.58 sprocket pitches across the width
+    cw_lo, cw_hi = 0.38 * pitch_est, 0.90 * pitch_est
+    ch_lo, ch_hi = 0.28 * pitch_est, 0.85 * pitch_est
     top, bot = [], []
-    # 35mm film: the 24mm gate occupies the middle ~69% of the 35mm strip,
-    # sprocket holes sit in the outer ~10% on each edge.
     for is_top, (y_lo, y_hi) in ((True, (0, int(h * 0.16))),
                                  (False, (int(h * 0.88), h))):
         band = gray[y_lo:y_hi, :]
@@ -73,19 +57,18 @@ def _sprocket_candidates(gray):
             continue
         # Adaptive threshold: sprocket holes are the bright tail of the band.
         thresh = float(np.percentile(band, 99.0))
-        thresh = max(50.0, min(140.0, thresh * 0.6))
+        thresh = max(30.0, min(150.0, thresh * 0.6))
         bright = (band > thresh).astype(np.uint8)
         n, labels, stats, _ = cv2.connectedComponentsWithStats(bright, 8)
         for i in range(1, n):
             x, y, cw, ch, area = stats[i]
-            if area < 3000 or area > 250000:
+            if not (cw_lo <= cw <= cw_hi and ch_lo <= ch <= ch_hi):
                 continue
-            if cw < 150 or cw > 650 or ch < 250 or ch > 700:
-                continue
-            if ch < cw * 0.6:
+            if ch < cw * 0.4:
                 continue
             hl = {"cx": x + cw // 2, "cy": y_lo + y + ch // 2,
-                  "y": int(y_lo + y), "ch": int(ch), "cw": int(cw)}
+                  "y": int(y_lo + y), "ch": int(ch), "cw": int(cw),
+                  "area": int(area)}
             (top if is_top else bot).append(hl)
     return top, bot
 
@@ -109,159 +92,306 @@ def _grid_aligned(holes, pitch=SPROCKET_PITCH_FALLBACK, tol=100):
     return [h for h in holes if h["cx"] in aligned_x]
 
 
-def _gate_from_sprockets(gray):
-    """Detect gate top/bottom/center from the periodic sprocket holes.
+def _grid_fit(xs, w):
+    """Return (pitch, phase, count) of the best periodic grid for x-centers.
 
-    Returns (top, bottom, center_x) or None if undetectable.
+    Scale-invariant: the pitch is searched over a wide range relative to the
+    image width. Among pitches that align the same number of blobs we prefer
+    the largest, because a sub-multiple of the true pitch (e.g. pitch/2) also
+    aligns perfectly spaced holes while the true pitch is the largest period
+    that does.
+    """
+    xs = np.array(sorted(set(int(round(x)) for x in xs)), dtype=np.float64)
+    if len(xs) < 4:
+        return None
+    lo = max(20, int(w * 0.02))
+    hi = int(w * 0.35)
+    best = None
+    for seed in xs[:3]:
+        for pitch in range(lo, hi, 4):
+            d = np.abs((xs - seed) % pitch)
+            d = np.minimum(d, pitch - d)
+            cnt = int((d <= max(6, pitch * 0.06)).sum())
+            if best is None or cnt > best[2] or (cnt == best[2] and pitch > best[0]):
+                best = (float(pitch), float(seed % pitch), cnt)
+    return best
+
+
+def _sprocket_info(gray):
+    """Sprocket geometry, tolerating one undetectable side.
+
+    Returns (ts_bot, bs_top, center_x, pitch); ts_bot/bs_top may be None if
+    that side's holes can't be resolved (e.g. an underexposed frame). Returns
+    None if no usable periodic grid is found.
     """
     top_cand, bot_cand = _sprocket_candidates(gray)
-    if len(top_cand) < 3 or len(bot_cand) < 3:
+    if len(top_cand) + len(bot_cand) < 4:
         return None
 
-    top_aligned = _grid_aligned(top_cand)
-    bot_aligned = _grid_aligned(bot_cand)
-    if len(top_aligned) < 3 or len(bot_aligned) < 3:
+    w = gray.shape[1]
+    fit = _grid_fit([h["cx"] for h in top_cand + bot_cand], w)
+    if fit is None:
+        return None
+    pitch, phase, _ = fit
+
+    # Sanity: the pitch implies a 24mm gate height; that must be a plausible
+    # fraction of the strip height. Rejects pitch aliasing (e.g. pitch/2).
+    gate_h_px = pitch * (GATE_H_MM / SPROCKET_PITCH_MM)
+    h = gray.shape[0]
+    if not (0.4 * h <= gate_h_px <= 0.9 * h):
         return None
 
-    top = max(hl["y"] + hl["ch"] for hl in top_aligned)
-    bot = min(hl["y"] for hl in bot_aligned)
+    tol = max(6, int(pitch * 0.10))
+
+    def aligned(holes):
+        return [h for h in holes
+                if min((h["cx"] - phase) % pitch,
+                       pitch - (h["cx"] - phase) % pitch) <= tol]
+
+    top_aligned = aligned(top_cand)
+    bot_aligned = aligned(bot_cand)
+    ts_bot = max(hl["y"] + hl["ch"] for hl in top_aligned) if len(top_aligned) >= 2 else None
+    bs_top = min(hl["y"] for hl in bot_aligned) if len(bot_aligned) >= 2 else None
+    if ts_bot is None and bs_top is None:
+        return None
 
     # Horizontal centre: midpoint of the detected hole run is robust to a few
     # missed holes (the median is not). Use top/bottom independently and pick
     # the one closest to the (roughly centred) image centre.
-    h, w = gray.shape
-    cx_top = (min(h["cx"] for h in top_aligned)
-              + max(h["cx"] for h in top_aligned)) / 2.0
-    cx_bot = (min(h["cx"] for h in bot_aligned)
-              + max(h["cx"] for h in bot_aligned)) / 2.0
-    center_x = min((cx_top, cx_bot), key=lambda c: abs(c - w / 2.0))
-    return top, bot, center_x
+    cx_candidates = []
+    if len(top_aligned) >= 2:
+        cx_candidates.append((min(h["cx"] for h in top_aligned)
+                              + max(h["cx"] for h in top_aligned)) / 2.0)
+    if len(bot_aligned) >= 2:
+        cx_candidates.append((min(h["cx"] for h in bot_aligned)
+                              + max(h["cx"] for h in bot_aligned)) / 2.0)
+    center_x = min(cx_candidates, key=lambda c: abs(c - w / 2.0))
+    # A fixed holder centres the frame in the scan. Only trust a sprocket-
+    # derived centre when it lands near the image centre; a hole run that is
+    # missing holes on one side gives a badly biased midpoint.
+    if not (w * 0.45 <= center_x <= w * 0.55):
+        center_x = w / 2.0
+    return ts_bot, bs_top, center_x, pitch
 
 
-def _gate_from_hstd(gray):
-    """Fallback gate detection using the horizontal-std dip at the gate edge."""
+def _gate_from_sprockets(gray):
+    """Detect the sprocket rows and scale from the periodic holes.
+
+    Returns (ts_bot, bs_top, center_x, pitch) or None if both rows aren't
+    detectable: ts_bot = bottom of the top sprocket holes, bs_top = top of the
+    bottom sprocket holes, pitch = sprocket pitch in pixels (scale reference).
+    """
+    info = _sprocket_info(gray)
+    if info is None:
+        return None
+    ts_bot, bs_top, center_x, pitch = info
+    if ts_bot is None or bs_top is None:
+        return None
+    return ts_bot, bs_top, center_x, pitch
+
+
+def _row_activity(gray):
+    """Median and median-absolute-deviation (MAD) per row.
+
+    Width is downsampled for speed but vertical resolution is kept, so the
+    returned profiles are one value per source row. The exposed photo (gate)
+    is bright and/or textured (high median or high MAD); the unexposed film
+    border (rebate) is uniformly dark and flat (low median *and* low MAD);
+    sprocket holes are bright but sparse, so they leave the median dark.
+    """
     h, w = gray.shape
-    hstd, scale = _row_hstd(gray)
-    t0, t1 = int(h * 0.05), int(h * 0.25)
-    b0, b1 = int(h * 0.75), int(h * 0.95)
-    top = t0 + int(np.argmin(hstd[t0 // scale:t1 // scale])) * scale
-    bot = b0 + int(np.argmin(hstd[b0 // scale:b1 // scale])) * scale
-    top = _refine_row(gray, top)
-    bot = _refine_row(gray, bot)
-    return top, bot
+    target_w = 400
+    if w > target_w:
+        small = cv2.resize(gray, (target_w, h),
+                           interpolation=cv2.INTER_AREA).astype(np.float32)
+    else:
+        small = gray.astype(np.float32)
+    med = np.median(small, axis=1)
+    mad = np.median(np.abs(small - med[:, None]), axis=1)
+    return med, mad
+
+
+def _col_activity(gray):
+    """Median and MAD per column (transpose of _row_activity)."""
+    h, w = gray.shape
+    target_h = 400
+    if h > target_h:
+        small = cv2.resize(gray, (w, target_h),
+                           interpolation=cv2.INTER_AREA).astype(np.float32)
+    else:
+        small = gray.astype(np.float32)
+    med = np.median(small, axis=0)
+    mad = np.median(np.abs(small - med[None, :]), axis=0)
+    return med, mad
+
+
+def _runs1d(mask):
+    """Contiguous True runs in a 1-D boolean array, as [(start, end)]."""
+    mask = np.asarray(mask, dtype=bool)
+    runs = []
+    start = None
+    for i in range(len(mask) + 1):
+        v = bool(mask[i]) if i < len(mask) else False
+        if v and start is None:
+            start = i
+        if not v and start is not None:
+            runs.append((start, i - 1))
+            start = None
+    return runs
+
+
+def _merge_runs(runs, gap):
+    """Merge runs separated by at most `gap` indices."""
+    if not runs:
+        return []
+    merged = []
+    cur_s, cur_e = runs[0]
+    for s, e in runs[1:]:
+        if s - cur_e - 1 <= gap:
+            cur_e = e
+        else:
+            merged.append((cur_s, cur_e))
+            cur_s, cur_e = s, e
+    merged.append((cur_s, cur_e))
+    return merged
+
+
+def _photo_edges_in(gray, y_lo, y_hi):
+    """Find the photo (top, bottom) within a row range, or None.
+
+    The rebate is dark and the photo is brighter, so the median brightness is
+    the discriminator. MAD is deliberately NOT used to extend the edges: a
+    fogged/light-leaked rebate can be textured (high MAD) yet dark, which
+    would otherwise drag the border out over the sprockets. Dark patches
+    *inside* the photo are bridged by the gap-merge below.
+    """
+    med, mad = _row_activity(gray)
+    med = med[y_lo:y_hi]
+    mad = mad[y_lo:y_hi]
+    if len(med) == 0:
+        return None
+    # Smooth so a single-row transient (dust line, fog streak) can't create a
+    # false edge; a ~0.1% window is a few rows at typical scan sizes.
+    k = max(3, len(med) // 1000)
+    med = np.convolve(med, np.ones(k) / k, mode="same")
+    med_base = float(np.percentile(med, 2))
+    med_thr = med_base + max(12.0, 0.5 * med_base)
+    photo = med > med_thr
+    # Bridge small dark patches inside the photo (e.g. shadows) up to ~3% of
+    # the range so a single dark area can't split the frame in two.
+    gap = max(1, int(round((y_hi - y_lo) * 0.03)))
+    runs = _merge_runs(_runs1d(photo), gap)
+    if not runs:
+        return None
+    top, bot = max(runs, key=lambda r: r[1] - r[0])
+    return top + y_lo, bot + y_lo
+
+
+def _detect_photo_edges(gray):
+    """Return (top, bottom) of the exposed photo frame, or None."""
+    return _photo_edges_in(gray, 0, gray.shape[0])
+
+
+def _photo_edges_x(gray, x_lo, x_hi):
+    """Return (left, right) of the exposed photo frame, or None.
+
+    The frame's horizontal extent is bounded by the dark inter-frame gaps, so
+    it's detected with the same brightness/texture step as the vertical edges
+    (there are no sprocket holes on the left/right to interfere).
+    """
+    med, mad = _col_activity(gray)
+    med = med[x_lo:x_hi]
+    mad = mad[x_lo:x_hi]
+    if len(med) == 0:
+        return None
+    med_base = float(np.percentile(med, 2))
+    mad_base = float(np.percentile(mad, 2))
+    med_thr = med_base + max(12.0, 0.5 * med_base)
+    mad_thr = mad_base + max(5.0, 0.8 * mad_base)
+    photo = (med > med_thr) | (mad > mad_thr)
+    gap = max(1, int(round((x_hi - x_lo) * 0.03)))
+    runs = _merge_runs(_runs1d(photo), gap)
+    if not runs:
+        return None
+    left, right = max(runs, key=lambda r: r[1] - r[0])
+    return left + x_lo, right + x_lo
 
 
 def detect_gate(gray):
     """Return (left, top, right, bottom) of the exposed film frame (gate)."""
     h, w = gray.shape
 
-    # Primary: geometry from the periodic sprocket holes.
-    sprocket = _gate_from_sprockets(gray)
-    if sprocket is not None:
-        top, bot, center_x = sprocket
-        gate_h = bot - top
-        # Sanity: a 35mm full-frame gate is 3:2 and its height is consistent.
-        if 3200 <= gate_h <= 4200 and w * 0.45 <= center_x <= w * 0.55:
-            gate_w = gate_h * ASPECT
-            left = center_x - gate_w / 2.0
-            right = center_x + gate_w / 2.0
-            return left, top, right, bot
+    info = _sprocket_info(gray)
+    if info is not None:
+        ts_bot, bs_top, center_x, pitch = info
+        gate_h_px = pitch * (GATE_H_MM / SPROCKET_PITCH_MM)
 
-    # Fallback: hstd dip for top/bottom, sprocket grid for centre.
-    top, bot = _gate_from_hstd(gray)
+        if ts_bot is not None and bs_top is not None:
+            # Both sprocket rows known: refine with the brightness/texture step
+            # inside the inter-sprocket band (the bright holes are excluded).
+            edges = _photo_edges_in(gray, int(ts_bot), int(bs_top))
+            if edges is not None and 0.85 * gate_h_px <= edges[1] - edges[0] <= 1.15 * gate_h_px:
+                top, bot = edges
+            else:
+                mid = (ts_bot + bs_top) / 2.0
+                top = mid - gate_h_px / 2.0
+                bot = mid + gate_h_px / 2.0
+        else:
+            # Only one sprocket row is detectable. Prefer the brightness/texture
+            # step (more precise); fall back to placing the 3:2 gate off the
+            # known row when the photo is too dark to detect.
+            edges = _photo_edges_in(gray, int(0.05 * h), int(0.95 * h))
+            if edges is not None and 0.85 * gate_h_px <= edges[1] - edges[0] <= 1.15 * gate_h_px:
+                top, bot = edges
+            elif ts_bot is not None:
+                top = ts_bot + 0.08 * pitch
+                bot = top + gate_h_px
+            else:
+                bot = bs_top - 0.08 * pitch
+                top = bot - gate_h_px
+    else:
+        # No usable sprockets (e.g. holes cropped off): brightness/texture over
+        # the middle of the strip (the outer ~5% is excluded so the bright
+        # sprocket slivers at the film edges aren't mistaken for photo).
+        edges = _photo_edges_in(gray, int(0.05 * h), int(0.95 * h))
+        expected_h = w / ASPECT
+        if edges is not None and 0.85 * expected_h <= edges[1] - edges[0] <= 1.08 * expected_h:
+            top, bot = edges
+        else:
+            top = (h - expected_h) / 2.0
+            bot = top + expected_h
+        center_x = _detect_center_x(gray, top, bot)
+
     gate_h = bot - top
     gate_w = gate_h * ASPECT
-    center_x = _detect_center_x(gray, top, bot)
+
+    # Refine the horizontal centre from the dark inter-frame gaps (handles
+    # scans where the frame isn't perfectly centred). The width stays 3:2;
+    # only the centre is shifted. We only trust a horizontal estimate that is
+    # consistent with the 3:2 width AND lands near the image centre (a dark
+    # edge inside the photo can otherwise bias it).
+    h_edges = _photo_edges_x(gray, 0, w)
+    if h_edges is not None:
+        h_cx = (h_edges[0] + h_edges[1]) / 2.0
+        if (0.90 * gate_w <= h_edges[1] - h_edges[0] <= 1.10 * gate_w
+                and w * 0.47 <= h_cx <= w * 0.53):
+            center_x = h_cx
+
     left = center_x - gate_w / 2.0
     right = center_x + gate_w / 2.0
     return left, top, right, bot
 
 
-def _row_profile(gray, y0, y1):
-    """Median and median-absolute-deviation per row (robust to sprocket dots)."""
-    meds = []
-    mads = []
-    for y in range(y0, y1):
-        row = gray[y, :].astype(np.float32)
-        med = float(np.median(row))
-        meds.append(med)
-        mads.append(float(np.median(np.abs(row - med))))
-    return np.array(meds), np.array(mads)
-
-
-def _photo_edge_top(gray, ts_bot):
-    """Find the actual photo top edge just below the top sprocket holes."""
-    h, w = gray.shape
-    t0 = int(ts_bot) + 2
-    t1 = min(h, t0 + 130)
-    if t1 - t0 < 25:
-        return None
-    meds, mads = _row_profile(gray, t0, t1)
-    med_base = float(np.percentile(meds, 15))
-    mad_base = float(np.percentile(mads, 15))
-    med_thr = med_base + max(6.0, 0.5 * med_base)
-    mad_thr = mad_base + max(3.0, 0.8 * mad_base)
-    idx = np.where((meds > med_thr) | (mads > mad_thr))[0]
-    if len(idx) == 0 or idx[0] > 110:
-        return None
-    return t0 + int(idx[0])
-
-
-def _photo_edge_bot(gray, bs_top):
-    """Find the actual photo bottom edge just above the bottom sprocket holes."""
-    h, w = gray.shape
-    b1 = int(bs_top) - 2
-    b0 = max(0, b1 - 130)
-    if b1 - b0 < 25:
-        return None
-    meds, mads = _row_profile(gray, b0, b1)
-    med_base = float(np.percentile(meds, 15))
-    mad_base = float(np.percentile(mads, 15))
-    med_thr = med_base + max(6.0, 0.5 * med_base)
-    mad_thr = mad_base + max(3.0, 0.8 * mad_base)
-    idx = np.where((meds > med_thr) | (mads > mad_thr))[0]
-    if len(idx) == 0 or (len(meds) - 1 - idx[-1]) > 110:
-        return None
-    return b0 + int(idx[-1])
-
-
 def detect_photo_gate(gray):
     """Return (left, top, right, bottom) of the actual photo (no rebate).
 
-    Finds the real exposed-image boundary (brightness/texture step) and then
-    trims a small safety margin inside it so no unexposed film border remains.
+    Finds the real exposed-image boundary and then trims a small safety
+    margin inside it so no unexposed film border remains.
     """
-    h, w = gray.shape
-    ts_bot, bs_top = _sprocket_inner_edges(gray)
-
-    if ts_bot is not None and bs_top is not None:
-        top = _photo_edge_top(gray, ts_bot)
-        bot = _photo_edge_bot(gray, bs_top)
-        # Calibrated fallback: the unexposed border between sprockets and gate
-        # is ~44-70px in this rig. Err toward over-cropping (no border).
-        if top is None:
-            top = ts_bot + 60
-        if bot is None:
-            bot = bs_top - 64
-        inset = 15
-    else:
-        # Sprocket detection failed (very dark scan): use the hstd edges with
-        # a generous inset so the unexposed border is definitely removed.
-        top, bot = _gate_from_hstd(gray)
-        inset = 40
-
-    if (bot - top) < 3400:
-        return detect_gate(gray)
-
-    top += inset
-    bot -= inset
-
+    left, top, right, bot = detect_gate(gray)
     gate_h = bot - top
-    gate_w = gate_h * ASPECT
-    center_x = _detect_center_x(gray, top, bot)
-    left = center_x - gate_w / 2.0 + inset
-    right = center_x + gate_w / 2.0 - inset
-    return left, top, right, bot
+    inset = max(8, int(round(gate_h * 0.004)))
+    return left + inset, top + inset, right - inset, bot - inset
 
 
 def _sprocket_centers(gray, top, bot):
@@ -278,11 +408,17 @@ def _detect_center_x(gray, top, bot):
     if len(holes) < 6:
         return w / 2.0
 
-    aligned = _grid_aligned([{"cx": x} for x in holes])
+    fit = _grid_fit(holes, w)
+    if fit is None:
+        return w / 2.0
+    pitch, phase, _ = fit
+    tol = max(6, int(pitch * 0.10))
+    aligned = [x for x in holes
+               if min((x - phase) % pitch, pitch - (x - phase) % pitch) <= tol]
     if len(aligned) < 6:
         return w / 2.0
 
-    cx = float(np.median([h["cx"] for h in aligned]))
+    cx = float(np.median(aligned))
     if w * 0.47 <= cx <= w * 0.53:
         return cx
     return w / 2.0
@@ -294,7 +430,7 @@ def _sprocket_inner_edges(gray):
     res = _gate_from_sprockets(gray)
     if res is None:
         return None, None
-    ts_bot, bs_top, _ = res
+    ts_bot, bs_top, _, _ = res
     return ts_bot, bs_top
 
 
@@ -304,7 +440,9 @@ def crop_with_border(gray, left, top, right, bot, border_frac,
 
     On top and bottom independently, the crop randomly either stops just
     inside the sprocket holes (clean) or dips a small, random amount into them
-    so a tiny sliver of sprocket is sometimes visible on that side.
+    so a tiny sliver of sprocket is sometimes visible on that side. The sliver
+    is only used when the unexposed rebate between the sprockets and the photo
+    is thin; otherwise dipping would drag a huge dark border into the crop.
     """
     h, w = gray.shape
     gate_h = bot - top
@@ -318,14 +456,14 @@ def crop_with_border(gray, left, top, right, bot, border_frac,
     ts_bot, bs_top = _sprocket_inner_edges(gray)
     rng = np.random.default_rng(seed)
 
-    if ts_bot is not None:
+    if ts_bot is not None and (top - ts_bot) < 0.08 * gate_h:
         if rng.random() < sprocket_chance:
             dip = rng.uniform(0.002, 0.012) * gate_h
             crop_top = max(0, int(round(ts_bot - dip)))
         else:
             crop_top = max(crop_top, int(ts_bot) + 4)
 
-    if bs_top is not None:
+    if bs_top is not None and (bs_top - bot) < 0.08 * gate_h:
         if rng.random() < sprocket_chance:
             dip = rng.uniform(0.002, 0.012) * gate_h
             crop_bot = min(h, int(round(bs_top + dip)))
