@@ -39,7 +39,7 @@ The script is executable and pins `/opt/homebrew/bin/python3.11` (which has
 OpenCV + numpy — the default `python3` on this Mac is 3.14 and does not):
 
 ```bash
-./rebate.py /Users/weslleyaraujo/Desktop/frontier-border/bar/*.jpg --out ./out
+./rebate.py scans/*.jpg --out ./out
 ```
 
 Single file:
@@ -61,11 +61,11 @@ Or explicitly:
 | `--out`       | `.`             | output directory                                         |
 | `--size`      | `0`             | square canvas size; `0` = native resolution (recommended)|
 | `--margin`    | `0.05`          | white margin around the crop (fraction)                  |
-| `--border`    | `0.015`         | film border kept around the gate (fraction of gate height)|
+| `--border`    | `0.025`         | film border kept around the gate (fraction of gate height)|
 | `--radius`    | `0.015`         | corner radius (fraction of final crop size)              |
 | `--radius-jitter` | `0`          | random +/- variation of corner radius (fraction; 0 = fixed corners) |
 | `--border-jitter` | `0.6`        | random shift of the black film border, as a fraction of the border thickness (0 = perfectly even) |
-| `--roughness` | `0.5`           | edge irregularity in px (0 = perfectly straight)         |
+| `--roughness` | `1.0`           | edge irregularity in px (0 = perfectly straight)         |
 | `--feather`   | `3.0`           | edge softness in px (0 = hard edge)                      |
 | `--sprocket-chance` | `0.7`      | chance (0-1) a tiny sliver of sprockets is visible, on at most one side (top or bottom) |
 | `--max-sprocket-border` | `0.03` | max rebate (fraction of gate height) that still shows a sprocket sliver; beyond it the crop keeps a small plain border |

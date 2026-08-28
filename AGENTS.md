@@ -37,31 +37,21 @@ Single file, glob, or many inputs all work (`inputs` is `nargs="+"`).
 
 ## Input data layout
 
-Positives live under `~/Pictures/`, e.g.:
+Positives are already-positive/inverted DSLR scans of 35mm "full sprocket"
+film, named `*-positive.jpg`. They live under `~/Pictures/` in per-roll
+folders (the exact folder structure varies). Use `play.sh DIR` to discover
+them by filename instead of hardcoding paths.
 
-```
-~/Pictures/2026/08_August/2026_08_picos_de_europa/<ROLL>/<ROLL>/positives/*-positive.jpg
-```
+Data notes for testing:
 
-Rolls (color negative, full sprockets):
+- Several color-negative rolls have clean full sprockets (good default).
+- One roll ships a `positives-borderless/` variant alongside `positives/`
+  (no sprockets); `play.sh` excludes anything with "borderless" in the path.
+- One slide roll mostly has weak/no sprocket detection.
+- `samples/input.jpg` is a downsampled B&W positive (1000×838) used for the
+  README examples; its rebate is thin so sprockets show with the default gate.
 
-- `Leica_M7_Fuji_Superia_Preium_400_6612` (37 frames, ~5743×4912)
-- `Leica_M7_Fujicolor_100_6226` (37)
-- `Ricoh_TF-900_Cinestill_50D_1644` (74) — **also has a `positives-borderless/`
-  folder (no sprockets); exclude it.**
-- `Ricoh_TF-900_Kodak_Gold_200_5664` (37)
-
-Others (problematic or different):
-
-- `Leica_M7_Kodak_Ektachrome_100_6595` (slide; **most frames have no/weak
-  sprockets**, ~5646×3751, in `2026_07_toronto`).
-- `Leica_M7_Kodak_Vision_250D_AHU_1577` (76) — has a **known gate-clipping
-  bug** (see Known issues).
-- `Minolta_XD-S_Kodak_Vision_250D_AHU_0362` (1).
-
-The repo also has `samples/input.jpg` — a downsampled **B&W** Kentmere 400
-positive (1000×838) used for the README examples. Its rebate is thin, so
-sprockets show even with the default gate.
+Most full-strip scans are ~5700×4900px; the slide roll is ~5600×3750px.
 
 ## Output / CLI flags (current)
 
@@ -70,12 +60,12 @@ sprockets show even with the default gate.
 | `--out` | `.` | output dir |
 | `--size` | `0` | square canvas size; `0` = native res (recommended) |
 | `--margin` | `0.05` | white margin around crop (fraction) |
-| `--border` | `0.015` | film border kept around gate (fraction of gate height) |
+| `--border` | `0.025` | film border kept around gate (fraction of gate height) |
 | `--radius` | `0.015` | corner radius (fraction of final crop size) |
 | `--radius-jitter` | `0.0` | random ± corner radius (fraction) |
 | `--border-jitter` | `0.6` | random shift of black border (fraction of border thickness); keeps crop size constant |
 | `--max-sprocket-border` | `0.03` | max rebate (fraction of gate height) that still shows a sprocket sliver |
-| `--roughness` | `0.5` | edge irregularity in px |
+| `--roughness` | `1.0` | edge irregularity in px |
 | `--feather` | `3.0` | edge softness in px |
 | `--sprocket-chance` | `0.7` | chance a tiny sprocket sliver shows, at most one side |
 | `--seed` | random | seed for edge texture / sprocket / border randomness |
@@ -161,12 +151,12 @@ wanted "a small part of the rebate + a tiny little bit of sprocket".
 
 ## Known issues
 
-- **Vision 250D 1577** (esp. `-019`): pre-existing gate-clipping bug —
+- One roll has a pre-existing **gate-clipping bug** on some dark frames:
   `detect_gate` returns a gate outside the image (e.g. y[-5..3651]). Unrelated
   to the sprocket work.
-- **Ektachrome 6595**: most frames have no/weak sprocket detection.
-- **Cinestill 50D 1644**: has both `positives/` (use this) and
-  `positives-borderless/` (no sprockets — do NOT use for sprocket work).
+- A slide roll mostly has no/weak sprocket detection.
+- One roll ships both `positives/` (use this) and `positives-borderless/` (no
+  sprockets — do NOT use for sprocket work).
 
 ## Tests
 

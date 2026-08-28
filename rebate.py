@@ -736,9 +736,9 @@ def main():
                          "resampling (default 0)")
     ap.add_argument("--margin", type=float, default=0.05,
                     help="white margin around crop (fraction; default 0.05)")
-    ap.add_argument("--border", type=float, default=0.015,
+    ap.add_argument("--border", type=float, default=0.025,
                     help="film border to include around the gate as fraction "
-                         "of gate height (default 0.015)")
+                         "of gate height (default 0.025)")
     ap.add_argument("--radius", type=float, default=0.015,
                     help="corner radius as fraction of the final crop size "
                          "(default 0.015)")
@@ -753,9 +753,9 @@ def main():
                     help="max rebate (fraction of gate height) that still "
                          "shows a sprocket sliver; beyond it the crop keeps "
                          "a small plain border (default 0.03)")
-    ap.add_argument("--roughness", type=float, default=0.5,
+    ap.add_argument("--roughness", type=float, default=1.0,
                     help="edge irregularity in px (0 = perfectly straight; "
-                         "default 0.5)")
+                         "default 1.0)")
     ap.add_argument("--feather", type=float, default=3.0,
                     help="edge softness in px (default 3.0)")
     ap.add_argument("--seed", type=int, default=None,
