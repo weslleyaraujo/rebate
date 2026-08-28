@@ -130,7 +130,7 @@ class TestPortrait(unittest.TestCase):
             in_path = os.path.join(d, "in.jpg")
             cv2.imwrite(in_path, portrait_bgr)
             out_path = rebate.process(in_path, d, 0, 0.05, 0.012, 0.015,
-                                      0.0, 0.0, 42, 100, 0.0, 0.0,
+                                      0.0, 0.0, 42, 100, 0.0, 0.0, 0.0,
                                       plain=True, debug=False)
             self.assertIsNotNone(out_path)
             out = cv2.imread(out_path, cv2.IMREAD_GRAYSCALE)
@@ -158,6 +158,63 @@ class TestCompose(unittest.TestCase):
         out = rebate.compose_on_white(crop, 0, 0.05, 0.015, 0.5, 3.0, 42, 0.25)
         self.assertGreater(out.shape[1], 300)
         self.assertGreater(out.shape[0], 200)
+
+
+class TestRandomness(unittest.TestCase):
+    def test_sprocket_band_edges(self):
+        h, w = 1200, 1800
+        img = np.full((h, w), 10, np.uint8)
+        img[0:100, :] = 220
+        img[300:900, :] = 180
+        img[1100:1200, :] = 220
+        ts_bot, bs_top = rebate._sprocket_band_edges(img)
+        self.assertIsNotNone(ts_bot)
+        self.assertIsNotNone(bs_top)
+        self.assertTrue(90 <= ts_bot <= 110)
+        self.assertTrue(1090 <= bs_top <= 1110)
+
+    def _sprocket_scan(self):
+        h, w = 1200, 1800
+        img = np.full((h, w), 10, np.uint8)
+        img[0:350, :] = 220      # top sprocket band
+        img[400:1000, :] = 180   # photo (gate)
+        img[1050:1200, :] = 220  # bottom sprocket band
+        return img
+
+    def test_border_jitter_constant_size_and_variation(self):
+        # No sprocket bands: border jitter alone keeps the crop size constant
+        # while shifting the window (asymmetric border).
+        h, w = 1200, 1800
+        img = np.full((h, w), 10, np.uint8)
+        img[400:1000, :] = 180
+        left, top, right, bot = 450, 400, 1350, 1000
+        widths, heights, tops = set(), set(), set()
+        for seed in range(30):
+            cl, ct, cr, cb = rebate.crop_with_border(
+                img, left, top, right, bot, 0.05, 0.0, seed, 0.6)
+            widths.add(cr - cl)
+            heights.add(cb - ct)
+            tops.add(ct)
+            self.assertLessEqual(cl, left)
+            self.assertGreaterEqual(cr, right)
+            self.assertLessEqual(ct, top)
+            self.assertGreaterEqual(cb, bot)
+        self.assertEqual(len(widths), 1)
+        self.assertEqual(len(heights), 1)
+        self.assertGreater(len(tops), 1)  # the shift actually moves the window
+
+    def test_sprocket_at_most_one_side(self):
+        img = self._sprocket_scan()
+        left, top, right, bot = 450, 400, 1350, 1000
+        ts_bot, bs_top = rebate._sprocket_inner_edges(img)
+        self.assertIsNotNone(ts_bot)
+        self.assertIsNotNone(bs_top)
+        for seed in range(60):
+            cl, ct, cr, cb = rebate.crop_with_border(
+                img, left, top, right, bot, 0.05, 1.0, seed, 0.0)
+            top_dipped = ct < int(ts_bot)
+            bot_dipped = cb > int(bs_top)
+            self.assertFalse(top_dipped and bot_dipped)
 
 
 if __name__ == "__main__":
