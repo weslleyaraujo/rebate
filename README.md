@@ -68,6 +68,7 @@ Or explicitly:
 | `--roughness` | `0.5`           | edge irregularity in px (0 = perfectly straight)         |
 | `--feather`   | `3.0`           | edge softness in px (0 = hard edge)                      |
 | `--sprocket-chance` | `0.7`      | chance (0-1) a tiny sliver of sprockets is visible, on at most one side (top or bottom) |
+| `--max-sprocket-border` | `0.03` | max rebate (fraction of gate height) that still shows a sprocket sliver; beyond it the crop keeps a small plain border |
 | `--seed`      | random          | random seed for edge texture (for reproducibility)       |
 | `--quality`   | `100`           | JPEG quality 1-100                                       |
 | `--plain`     | off             | crop just the 3:2 image, no border, no white canvas      |
@@ -129,8 +130,10 @@ positive (slide) film.
    brightness/texture step over the whole strip, cross-checked against the
    expected 3:2 height.
 4. Horizontal centre from the sprocket holes (top/bottom cross-checked).
-5. Crops the gate plus a thin band of the real unexposed film border (the
-   sprocket sliver is only used when the rebate is thin).
+5. Crops the gate plus a thin band of the real unexposed film border (and,
+   with `--sprocket-chance`, occasionally dips a tiny sliver of sprocket
+   holes on at most one randomly-chosen side — only when that side's rebate
+   is thin enough that the border stays small; see `--max-sprocket-border`).
 6. Applies a rounded, slightly wavy, feathered edge and pastes onto a white
    canvas at native resolution.
 

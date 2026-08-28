@@ -130,7 +130,7 @@ class TestPortrait(unittest.TestCase):
             in_path = os.path.join(d, "in.jpg")
             cv2.imwrite(in_path, portrait_bgr)
             out_path = rebate.process(in_path, d, 0, 0.05, 0.012, 0.015,
-                                      0.0, 0.0, 42, 100, 0.0, 0.0, 0.0,
+                                      0.0, 0.0, 42, 100, 0.0, 0.0, 0.0, 0.03,
                                       plain=True, debug=False)
             self.assertIsNotNone(out_path)
             out = cv2.imread(out_path, cv2.IMREAD_GRAYSCALE)
@@ -173,6 +173,20 @@ class TestRandomness(unittest.TestCase):
         self.assertTrue(90 <= ts_bot <= 110)
         self.assertTrue(1090 <= bs_top <= 1110)
 
+    def test_sprocket_band_edges_ignores_photo_edge_strip(self):
+        # A bright strip right at the photo's top edge must not be mistaken for
+        # the top sprocket band (regression: it made the top rebate look thin
+        # and biased the sprocket sliver to the bottom).
+        h, w = 1200, 1800
+        img = np.full((h, w), 10, np.uint8)
+        img[0:100, :] = 220       # top sprocket band
+        img[280:300, :] = 220     # spurious bright strip at photo edge
+        img[300:900, :] = 180     # photo
+        img[1100:1200, :] = 220   # bottom sprocket band
+        ts_bot, bs_top = rebate._sprocket_band_edges(img)
+        self.assertTrue(90 <= ts_bot <= 110)
+        self.assertTrue(1090 <= bs_top <= 1110)
+
     def _sprocket_scan(self):
         h, w = 1200, 1800
         img = np.full((h, w), 10, np.uint8)
@@ -211,10 +225,28 @@ class TestRandomness(unittest.TestCase):
         self.assertIsNotNone(bs_top)
         for seed in range(60):
             cl, ct, cr, cb = rebate.crop_with_border(
-                img, left, top, right, bot, 0.05, 1.0, seed, 0.0)
+                img, left, top, right, bot, 0.05, 1.0, seed, 0.0, 0.1)
             top_dipped = ct < int(ts_bot)
             bot_dipped = cb > int(bs_top)
             self.assertFalse(top_dipped and bot_dipped)
+
+    def test_sprocket_skipped_when_rebate_too_thick(self):
+        # A wide black rebate between the photo and the sprockets must NOT be
+        # dragged into the crop (it would make the border massive).
+        h, w = 1200, 1800
+        img = np.full((h, w), 10, np.uint8)
+        img[0:350, :] = 220       # top sprocket band
+        img[500:1000, :] = 180    # photo (gate)
+        img[1150:1200, :] = 220   # bottom sprocket band
+        left, top, right, bot = 450, 500, 1350, 1000
+        ts_bot, bs_top = rebate._sprocket_inner_edges(img)
+        self.assertIsNotNone(ts_bot)
+        self.assertIsNotNone(bs_top)
+        for seed in range(60):
+            cl, ct, cr, cb = rebate.crop_with_border(
+                img, left, top, right, bot, 0.05, 1.0, seed, 0.0, 0.03)
+            self.assertGreaterEqual(ct, int(ts_bot))
+            self.assertLessEqual(cb, int(bs_top))
 
 
 if __name__ == "__main__":

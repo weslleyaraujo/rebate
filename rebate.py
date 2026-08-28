@@ -438,9 +438,12 @@ def _sprocket_band_edges(gray):
         photo = max(runs, key=lambda r: r[1] - r[0])
 
     ts_bot = bs_top = None
+    # The sprocket band on each side is the bright run closest to that image
+    # edge (top / bottom), not the run closest to the photo: a bright strip at
+    # the photo's own edge is common and must not be mistaken for sprockets.
     above = [r for r in runs if r[1] < photo[0]]
     if above:
-        ts_bot = above[-1][1]
+        ts_bot = above[0][1]
     below = [r for r in runs if r[0] > photo[1]]
     if below:
         bs_top = below[0][0]
@@ -467,7 +470,8 @@ def _sprocket_inner_edges(gray):
 
 
 def crop_with_border(gray, left, top, right, bot, border_frac,
-                     sprocket_chance, seed, border_jitter=0.0):
+                     sprocket_chance, seed, border_jitter=0.0,
+                     max_sprocket_border=0.03):
     """Expand the gate by border_frac * gate_height, with two sources of
     randomness so no two crops look alike:
 
@@ -503,23 +507,28 @@ def crop_with_border(gray, left, top, right, bot, border_frac,
 
     ts_bot, bs_top = _sprocket_inner_edges(gray)
 
-    top_ok = ts_bot is not None and 0 < top - ts_bot < 0.04 * gate_h
-    bot_ok = bs_top is not None and 0 < bs_top - bot < 0.04 * gate_h
+    # Only show sprockets when the rebate between the photo and that band is
+    # small; otherwise dipping would drag a wide black rebate into the crop.
+    max_border = max_sprocket_border * gate_h
+    top_avail = ts_bot is not None and 0 < top - ts_bot < max_border
+    bot_avail = bs_top is not None and 0 < bs_top - bot < max_border
 
-    # Clean-clamp each eligible side to just inside its sprocket band first...
-    if top_ok:
+    # Clean-clamp each side with detected sprockets so the normal border never
+    # accidentally reaches the holes...
+    if top_avail:
         crop_top = max(crop_top, int(ts_bot) + 4)
-    if bot_ok:
+    if bot_avail:
         crop_bot = min(crop_bot, int(bs_top) - 4)
 
-    # ...then dip at most ONE eligible side into the holes.
-    if top_ok or bot_ok:
+    # ...then optionally dip at most ONE eligible side into the holes, chosen
+    # randomly when both are close enough.
+    if top_avail or bot_avail:
         if rng.random() < sprocket_chance:
-            dip = rng.uniform(0.0002, 0.001) * gate_h
-            if top_ok and bot_ok:
+            dip = rng.uniform(0.0005, 0.0015) * gate_h
+            if top_avail and bot_avail:
                 dip_top = rng.random() < 0.5
             else:
-                dip_top = top_ok
+                dip_top = top_avail
             if dip_top:
                 crop_top = max(0, int(round(ts_bot - dip)))
             else:
@@ -640,8 +649,8 @@ def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
 
 def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
             roughness, feather, seed, quality, sprocket_chance,
-            radius_jitter, border_jitter, plain=False, debug=False,
-            suffix=".bordered.jpg"):
+            radius_jitter, border_jitter, max_sprocket_border=0.03,
+            plain=False, debug=False, suffix=".bordered.jpg"):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
         print(f"!! cannot read {path}", file=sys.stderr)
@@ -680,7 +689,8 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
     left, top, right, bot = detect_gate(gray)
     crop_seed = None if seed is None else seed + 100000
     cl, ct, cr, cb = crop_with_border(gray, left, top, right, bot, border_frac,
-                                      sprocket_chance, crop_seed, border_jitter)
+                                      sprocket_chance, crop_seed, border_jitter,
+                                      max_sprocket_border)
 
     if debug:
         dbg = img.copy()
@@ -739,6 +749,10 @@ def main():
                     help="random shift of the black film border, as a "
                          "fraction of the border thickness (0 = perfectly "
                          "even; default 0.6)")
+    ap.add_argument("--max-sprocket-border", type=float, default=0.03,
+                    help="max rebate (fraction of gate height) that still "
+                         "shows a sprocket sliver; beyond it the crop keeps "
+                         "a small plain border (default 0.03)")
     ap.add_argument("--roughness", type=float, default=0.5,
                     help="edge irregularity in px (0 = perfectly straight; "
                          "default 0.5)")
@@ -767,7 +781,8 @@ def main():
         process(path, args.out, args.size, args.margin, args.border,
                 args.radius, args.roughness, args.feather, args.seed,
                 args.quality, args.sprocket_chance, args.radius_jitter,
-                args.border_jitter, args.plain, args.debug, args.suffix)
+                args.border_jitter, args.max_sprocket_border,
+                args.plain, args.debug, args.suffix)
 
 
 if __name__ == "__main__":
