@@ -63,6 +63,7 @@ Most full-strip scans are ~5700×4900px; the slide roll is ~5600×3750px.
 | `--border` | `0.025` | film border kept around gate (fraction of gate height) |
 | `--radius` | `0.015` | corner radius (fraction of final crop size) |
 | `--radius-jitter` | `0.0` | random ± corner radius (fraction) |
+| `--square-corner-chance` | `0.2` | chance one corner, or two corners on the same side, are squared off instead of rounded |
 | `--border-jitter` | `0.6` | random shift of black border (fraction of border thickness); keeps crop size constant |
 | `--max-sprocket-border` | `0.03` | max rebate (fraction of gate height) that still shows a sprocket sliver |
 | `--roughness` | `1.0` | edge irregularity in px |
@@ -99,8 +100,11 @@ Crop / compose:
   `border_frac`, apply border jitter (shift, constant size), then optionally
   dip a tiny sprocket sliver on at most one side.
 - `_rounded_mask` / `_organic_mask` — rounded-rect mask with fractal-noise
-  edge perturbation (roughness) + Gaussian feather.
-- `compose_on_white` — paste crop onto white canvas (native or `--size`).
+  edge perturbation (roughness) + Gaussian feather. `_rounded_mask` also
+  accepts `square_corners` (a set of 'tl'/'tr'/'bl'/'br') to leave some
+  corners squared off.
+- `compose_on_white` — paste crop onto white canvas (native or `--size`);
+  decides which (if any) corners get squared via `--square-corner-chance`.
 - `process` — reads image, handles portrait rotation, runs detect→crop→compose.
 - `main` — argparse.
 
@@ -164,9 +168,10 @@ wanted "a small part of the rebate + a tiny little bit of sprocket".
 /opt/homebrew/bin/python3.11 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-16 tests in `tests/test_rebate.py` cover masks, grid fitting, gate/photo
+18 tests in `tests/test_rebate.py` cover masks, grid fitting, gate/photo
 detection, portrait rotation, compose, and randomness (sprocket band edges,
-border jitter, sprocket-at-most-one-side, and thick-rebate skip).
+border jitter, sprocket-at-most-one-side, thick-rebate skip, and squared
+corner chance).
 
 ## Regenerating the README samples
 

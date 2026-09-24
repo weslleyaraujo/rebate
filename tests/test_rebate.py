@@ -44,6 +44,18 @@ class TestMasks(unittest.TestCase):
         self.assertEqual(int(m[2, 2]), 0)       # outside the inset
         self.assertEqual(int(m[50, 50]), 255)   # still opaque inside
 
+    def test_rounded_mask_squared_corners(self):
+        m = rebate._rounded_mask(100, 80, 10, square_corners={'tl'})
+        self.assertEqual(int(m[0, 0]), 255)       # squared, not cut away
+        self.assertEqual(int(m[79, 99]), 0)       # other corners still rounded
+        self.assertEqual(int(m[0, 99]), 0)
+        self.assertEqual(int(m[79, 0]), 0)
+        m2 = rebate._rounded_mask(100, 80, 10, square_corners={'tl', 'bl'})
+        self.assertEqual(int(m2[0, 0]), 255)
+        self.assertEqual(int(m2[79, 0]), 255)      # bottom-left also squared
+        self.assertEqual(int(m2[0, 99]), 0)        # right corners still rounded
+        self.assertEqual(int(m2[79, 99]), 0)
+
     def test_organic_mask_deterministic(self):
         a = rebate._organic_mask(200, 150, 20, 2.0, 1.0, 42)
         b = rebate._organic_mask(200, 150, 20, 2.0, 1.0, 42)
@@ -158,6 +170,33 @@ class TestCompose(unittest.TestCase):
         out = rebate.compose_on_white(crop, 0, 0.05, 0.015, 0.5, 3.0, 42, 0.25)
         self.assertGreater(out.shape[1], 300)
         self.assertGreater(out.shape[0], 200)
+
+    def test_square_corner_chance_one_or_two_same_side(self):
+        crop = np.full((300, 450, 3), 80, np.uint8)
+        size, margin, radius_frac = 600, 0.05, 0.015
+        scale = size * (1.0 - 2.0 * margin) / 450.0
+        dw, dh = int(round(450 * scale)), int(round(300 * scale))
+        ox, oy = (size - dw) // 2, (size - dh) // 2
+        inset = 2  # _organic_mask inset when roughness == feather == 0
+        pts = {
+            'tl': (oy + inset, ox + inset),
+            'tr': (oy + inset, ox + dw - 1 - inset),
+            'bl': (oy + dh - 1 - inset, ox + inset),
+            'br': (oy + dh - 1 - inset, ox + dw - 1 - inset),
+        }
+        for seed in range(100):
+            out = rebate.compose_on_white(crop, size, margin, radius_frac,
+                                          0.0, 0.0, seed, 0.0, 1.0)
+            square = {k: out[y, x].tolist() == [80, 80, 80]
+                      for k, (y, x) in pts.items()}
+            n = sum(square.values())
+            self.assertIn(n, (1, 2))
+            if n == 2:
+                sq = set(k for k, v in square.items() if v)
+                self.assertTrue(
+                    sq in ({'tl', 'bl'}, {'tr', 'br'}, {'tl', 'tr'},
+                           {'bl', 'br'}),
+                    f'seed {seed}: two squared corners must share a side, got {sq}')
 
 
 class TestRandomness(unittest.TestCase):

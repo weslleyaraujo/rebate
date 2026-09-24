@@ -64,6 +64,7 @@ Or explicitly:
 | `--border`    | `0.025`         | film border kept around the gate (fraction of gate height)|
 | `--radius`    | `0.015`         | corner radius (fraction of final crop size)              |
 | `--radius-jitter` | `0`          | random +/- variation of corner radius (fraction; 0 = fixed corners) |
+| `--square-corner-chance` | `0.2` | chance (0-1) that one corner, or two corners on the same side, are squared off instead of rounded |
 | `--border-jitter` | `0.6`        | random shift of the black film border, as a fraction of the border thickness (0 = perfectly even) |
 | `--roughness` | `1.0`           | edge irregularity in px (0 = perfectly straight)         |
 | `--feather`   | `3.0`           | edge softness in px (0 = hard edge)                      |
@@ -78,7 +79,8 @@ Or explicitly:
 ### What are "seeds"?
 
 The bordered look has a few random details — the edge texture/roughness, the
-corner rounding amount, and whether a tiny sprocket sliver shows. A **seed** is
+corner rounding amount, whether some corners are squared off, and whether a
+tiny sprocket sliver shows. A **seed** is
 just the random number that picks those details.
 
 - Same settings, **different seed** → a slightly different (but equivalent) look.

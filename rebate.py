@@ -537,8 +537,12 @@ def crop_with_border(gray, left, top, right, bot, border_frac,
     return crop_left, crop_top, crop_right, crop_bot
 
 
-def _rounded_mask(w, h, radius, inset=0):
-    """Rounded-rectangle mask, optionally inset from the image boundary."""
+def _rounded_mask(w, h, radius, inset=0, square_corners=None):
+    """Rounded-rectangle mask, optionally inset from the image boundary.
+
+    square_corners: iterable of corner names ('tl', 'tr', 'bl', 'br') that
+    should be left squared off instead of rounded.
+    """
     inset = max(0, int(inset))
     if inset * 2 >= w or inset * 2 >= h:
         return np.zeros((h, w), np.uint8)
@@ -548,17 +552,33 @@ def _rounded_mask(w, h, radius, inset=0):
     x1, y1 = w - inset - 1, h - inset - 1
     if r <= 0:
         cv2.rectangle(mask, (x0, y0), (x1, y1), 255, -1)
-    else:
-        cv2.rectangle(mask, (x0 + r, y0), (x1 - r, y1), 255, -1)
-        cv2.rectangle(mask, (x0, y0 + r), (x1, y1 - r), 255, -1)
-        cv2.circle(mask, (x0 + r, y0 + r), r, 255, -1)
-        cv2.circle(mask, (x1 - r, y0 + r), r, 255, -1)
-        cv2.circle(mask, (x0 + r, y1 - r), r, 255, -1)
-        cv2.circle(mask, (x1 - r, y1 - r), r, 255, -1)
+        return mask
+    square = set(square_corners or ())
+    cv2.rectangle(mask, (x0 + r, y0), (x1 - r, y1), 255, -1)
+    cv2.rectangle(mask, (x0, y0 + r), (x1, y1 - r), 255, -1)
+    circles = {
+        'tl': (x0 + r, y0 + r),
+        'tr': (x1 - r, y0 + r),
+        'bl': (x0 + r, y1 - r),
+        'br': (x1 - r, y1 - r),
+    }
+    squares = {
+        'tl': (x0, y0, x0 + r, y0 + r),
+        'tr': (x1 - r, y0, x1, y0 + r),
+        'bl': (x0, y1 - r, x0 + r, y1),
+        'br': (x1 - r, y1 - r, x1, y1),
+    }
+    for name in ('tl', 'tr', 'bl', 'br'):
+        if name in square:
+            rx0, ry0, rx1, ry1 = squares[name]
+            cv2.rectangle(mask, (rx0, ry0), (rx1, ry1), 255, -1)
+        else:
+            cx, cy = circles[name]
+            cv2.circle(mask, (cx, cy), r, 255, -1)
     return mask
 
 
-def _organic_mask(w, h, radius, roughness, feather, seed):
+def _organic_mask(w, h, radius, roughness, feather, seed, square_corners=None):
     """Rounded-rect mask with slightly irregular, soft edges.
 
     The mask is inset a few pixels and its outline is perturbed by
@@ -567,7 +587,7 @@ def _organic_mask(w, h, radius, roughness, feather, seed):
     film edge.
     """
     inset = int(round(2.0 * roughness + feather)) + 2
-    base = _rounded_mask(w, h, radius, inset)
+    base = _rounded_mask(w, h, radius, inset, square_corners)
     mask = base.astype(np.float32)
 
     if roughness > 0:
@@ -598,7 +618,8 @@ def _organic_mask(w, h, radius, roughness, feather, seed):
 
 
 def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
-                     feather, seed, radius_jitter=0.0):
+                     feather, seed, radius_jitter=0.0,
+                     square_corner_chance=0.0):
     """Place crop on a white canvas.
 
     size > 0: square `size x size` canvas, crop scaled to fit.
@@ -631,10 +652,29 @@ def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
     else:
         factor = 1.0
     radius = max(0, int(round(base_radius * factor)))
+
+    # Sometimes one or two corners are left squared off (not rounded). When
+    # two, they are always on the same side (left/right/top/bottom) so the
+    # squared corners read as a deliberate, film-lab-like variation.
+    square_corners = set()
+    if square_corner_chance > 0 and rng.random() < square_corner_chance:
+        if rng.random() < 0.5:
+            side = rng.choice(['left', 'right', 'top', 'bottom'])
+            if side == 'left':
+                square_corners = {'tl', 'bl'}
+            elif side == 'right':
+                square_corners = {'tr', 'br'}
+            elif side == 'top':
+                square_corners = {'tl', 'tr'}
+            else:
+                square_corners = {'bl', 'br'}
+        else:
+            square_corners = {rng.choice(['tl', 'tr', 'bl', 'br'])}
+
     # roughness/feather are defined at native scale; scale them so a downscaled
     # output looks the same as native rather than proportionally softer.
     mask = _organic_mask(dw, dh, radius, roughness * scale, feather * scale,
-                         seed)
+                         seed, square_corners)
 
     canvas = np.full((canvas_h, canvas_w, 3), 255, np.uint8)
     ox = (canvas_w - dw) // 2
@@ -649,8 +689,9 @@ def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
 
 def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
             roughness, feather, seed, quality, sprocket_chance,
-            radius_jitter, border_jitter, max_sprocket_border=0.03,
-            plain=False, debug=False, suffix=".bordered.jpg"):
+            radius_jitter, square_corner_chance=0.0, border_jitter=0.0,
+            max_sprocket_border=0.03, plain=False, debug=False,
+            suffix=".bordered.jpg"):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
         print(f"!! cannot read {path}", file=sys.stderr)
@@ -707,7 +748,8 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
 
     crop = img[ct:cb, cl:cr]
     result = compose_on_white(crop, size, margin_frac, radius_frac, roughness,
-                              feather, seed, radius_jitter)
+                              feather, seed, radius_jitter,
+                              square_corner_chance)
     if portrait:
         result = cv2.rotate(result, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
@@ -745,6 +787,10 @@ def main():
     ap.add_argument("--radius-jitter", type=float, default=0.0,
                     help="random +/- variation of the corner radius, as a "
                          "fraction (0 = fixed corners; default 0)")
+    ap.add_argument("--square-corner-chance", type=float, default=0.2,
+                    help="probability (0-1) that one corner, or two corners "
+                         "on the same side, are squared off instead of "
+                         "rounded (default 0.2)")
     ap.add_argument("--border-jitter", type=float, default=0.6,
                     help="random shift of the black film border, as a "
                          "fraction of the border thickness (0 = perfectly "
@@ -781,8 +827,8 @@ def main():
         process(path, args.out, args.size, args.margin, args.border,
                 args.radius, args.roughness, args.feather, args.seed,
                 args.quality, args.sprocket_chance, args.radius_jitter,
-                args.border_jitter, args.max_sprocket_border,
-                args.plain, args.debug, args.suffix)
+                args.square_corner_chance, args.border_jitter,
+                args.max_sprocket_border, args.plain, args.debug, args.suffix)
 
 
 if __name__ == "__main__":
