@@ -66,6 +66,7 @@ Most full-strip scans are ~5700×4900px; the slide roll is ~5600×3750px.
 | `--square-corner-chance` | `0.2` | chance one corner, or two corners on the same side, are squared off instead of rounded |
 | `--border-jitter` | `0.6` | random shift of black border (fraction of border thickness); keeps crop size constant |
 | `--max-sprocket-border` | `0.03` | max rebate (fraction of gate height) that still shows a sprocket sliver |
+| `--offset-left` / `--offset-right` / `--offset-top` / `--offset-bottom` | `0` | manual nudge of one crop edge, in px at full scan res; positive reveals more of that side, negative trims inward. Deterministic, applied to the final crop (only touches its own edge). Pair with `--border-jitter 0` + a fixed `--seed` to fix occasional mis-crops without touching detection |
 | `--roughness` | `1.0` | edge irregularity in px |
 | `--feather` | `3.0` | edge softness in px |
 | `--sprocket-chance` | `0.7` | chance a tiny sprocket sliver shows, at most one side |

@@ -4,8 +4,10 @@ Run with:
     /opt/homebrew/bin/python3.11 -m unittest discover -s tests -p 'test_*.py'
 """
 
+import argparse
 import os
 import sys
+import tempfile
 import unittest
 
 import cv2
@@ -286,6 +288,143 @@ class TestRandomness(unittest.TestCase):
                 img, left, top, right, bot, 0.05, 1.0, seed, 0.0, 0.03)
             self.assertGreaterEqual(ct, int(ts_bot))
             self.assertLessEqual(cb, int(bs_top))
+
+
+class TestOffsets(unittest.TestCase):
+    def test_offset_nudges_crop_edges(self):
+        """Per-side offsets reveal/trim the crop without touching detection."""
+        import tempfile
+        scan = cv2.cvtColor(make_scan(), cv2.COLOR_GRAY2BGR)
+        with tempfile.TemporaryDirectory() as d:
+            in_path = os.path.join(d, "in.jpg")
+            cv2.imwrite(in_path, scan)
+            base = rebate.process(in_path, d, 0, 0.05, 0.012, 0.015,
+                                  0.0, 0.0, 42, 100, 0.0, 0.0, 0.0, 0.03,
+                                  plain=True, suffix=".base.jpg")
+            off = rebate.process(in_path, d, 0, 0.05, 0.012, 0.015,
+                                 0.0, 0.0, 42, 100, 0.0, 0.0, 0.0, 0.03,
+                                 offset_left=40.0, offset_right=20.0,
+                                 offset_top=10.0, offset_bottom=5.0,
+                                 plain=True, suffix=".off.jpg")
+            self.assertIsNotNone(base)
+            self.assertIsNotNone(off)
+            b = cv2.imread(base, cv2.IMREAD_GRAYSCALE)
+            o = cv2.imread(off, cv2.IMREAD_GRAYSCALE)
+            # positive offsets reveal more on that side: width +60 (40+20),
+            # height +15 (10+5). Tolerate +-1 for float rounding.
+            self.assertAlmostEqual(o.shape[1] - b.shape[1], 60, delta=1)
+            self.assertAlmostEqual(o.shape[0] - b.shape[0], 15, delta=1)
+
+    def test_negative_offset_trims_crop(self):
+        import tempfile
+        scan = cv2.cvtColor(make_scan(), cv2.COLOR_GRAY2BGR)
+        with tempfile.TemporaryDirectory() as d:
+            in_path = os.path.join(d, "in.jpg")
+            cv2.imwrite(in_path, scan)
+            base = rebate.process(in_path, d, 0, 0.05, 0.012, 0.015,
+                                  0.0, 0.0, 42, 100, 0.0, 0.0, 0.0, 0.03,
+                                  plain=True, suffix=".base.jpg")
+            off = rebate.process(in_path, d, 0, 0.05, 0.012, 0.015,
+                                 0.0, 0.0, 42, 100, 0.0, 0.0, 0.0, 0.03,
+                                 offset_left=-30.0, offset_top=-10.0,
+                                 plain=True, suffix=".off.jpg")
+            b = cv2.imread(base, cv2.IMREAD_GRAYSCALE)
+            o = cv2.imread(off, cv2.IMREAD_GRAYSCALE)
+            self.assertAlmostEqual(o.shape[1] - b.shape[1], -30, delta=1)
+            self.assertAlmostEqual(o.shape[0] - b.shape[0], -10, delta=1)
+
+    def test_nudge_crop_moves_only_its_own_edge(self):
+        """Each offset flag nudges exactly one crop edge, deterministic."""
+        base = (100, 50, 200, 150)
+        n = rebate._nudge_crop
+        # + reveals more (edge moves outward), the other three edges untouched.
+        self.assertEqual(n(*base, 10, 0, 0, 0, 1000, 1000), (90, 50, 200, 150))
+        self.assertEqual(n(*base, 0, 0, 10, 0, 1000, 1000), (100, 50, 210, 150))
+        self.assertEqual(n(*base, 0, 10, 0, 0, 1000, 1000), (100, 40, 200, 150))
+        self.assertEqual(n(*base, 0, 0, 0, 10, 1000, 1000), (100, 50, 200, 160))
+        # - trims inward.
+        self.assertEqual(n(*base, -10, 0, 0, 0, 1000, 1000), (110, 50, 200, 150))
+        # clamped to image bounds, and never inverted.
+        self.assertEqual(n(5, 5, 10, 10, 100, 100, 100, 100, 1000, 1000),
+                         (0, 0, 110, 110))
+
+
+class TestConfigs(unittest.TestCase):
+    """Named config (preset) storage and application."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+        self.tmp.close()
+        os.unlink(self.tmp.name)
+        self._old = os.environ.get("REBATE_CONFIG_FILE")
+        os.environ["REBATE_CONFIG_FILE"] = self.tmp.name
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("REBATE_CONFIG_FILE", None)
+        else:
+            os.environ["REBATE_CONFIG_FILE"] = self._old
+        if os.path.exists(self.tmp.name):
+            os.unlink(self.tmp.name)
+
+    def test_save_stores_only_explicit_options(self):
+        self.assertEqual(
+            rebate.config_command(["save", "ig", "--quality", "95",
+                                   "--border", "0.04"]), 0)
+        configs = rebate._load_configs()
+        self.assertEqual(configs, {"ig": {"quality": 95, "border": 0.04}})
+
+    def test_save_list_show_delete_rename(self):
+        rebate.config_command(["save", "ig", "--quality", "95"])
+        rebate.config_command(["save", "plainish", "--plain", "--suffix", ".p.png"])
+        self.assertEqual(rebate._load_configs(), {
+            "ig": {"quality": 95},
+            "plainish": {"plain": True, "suffix": ".p.png"},
+        })
+
+        # show returns 0 for a known config and 1 for an unknown one.
+        self.assertEqual(rebate.config_command(["show", "ig"]), 0)
+        self.assertEqual(rebate.config_command(["show", "nope"]), 1)
+
+        self.assertEqual(rebate.config_command(["rename", "ig", "insta"]), 0)
+        self.assertNotIn("ig", rebate._load_configs())
+        self.assertIn("insta", rebate._load_configs())
+
+        self.assertEqual(rebate.config_command(["delete", "insta"]), 0)
+        self.assertNotIn("insta", rebate._load_configs())
+        self.assertEqual(rebate.config_command(["delete", "insta"]), 1)
+
+    def test_save_requires_an_option(self):
+        self.assertEqual(rebate.config_command(["save", "empty"]), 1)
+        self.assertEqual(rebate._load_configs(), {})
+
+    def test_explicit_option_names(self):
+        names = rebate._explicit_option_names(
+            ["--quality", "100", "--border", "0.035", "--plain",
+             "--size=3000"])
+        self.assertIn("quality", names)
+        self.assertIn("border", names)
+        self.assertIn("plain", names)
+        self.assertIn("size", names)
+        self.assertNotIn("margin", names)
+
+    def test_coerce_config_types(self):
+        self.assertEqual(
+            rebate._coerce_config({"quality": "100", "border": "0.04",
+                                   "plain": True, "suffix": 123}),
+            {"quality": 100, "border": 0.04, "plain": True, "suffix": "123"})
+        # Bad values are dropped rather than crashing the run.
+        self.assertEqual(rebate._coerce_config({"quality": "abc"}), {})
+
+    def test_add_common_options_seeds_defaults_and_overrides(self):
+        p = argparse.ArgumentParser(add_help=False)
+        rebate._add_common_options(p, {"quality": 88, "plain": True})
+        args = p.parse_args([])
+        self.assertEqual(args.quality, 88)
+        self.assertTrue(args.plain)
+        self.assertEqual(args.size, 0)  # untouched built-in default
+        over = p.parse_args(["--quality", "91"])
+        self.assertEqual(over.quality, 91)
 
 
 if __name__ == "__main__":

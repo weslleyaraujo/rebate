@@ -11,14 +11,23 @@ Why "natural": instead of drawing a fake border, we use the actual unexposed
 film border that is already present in the scan.
 
 Usage:
-    python3 rebate.py INPUT... [--out DIR] [options]
+    python3 rebate.py INPUT... [--out DIR] [--config NAME] [options]
+    python3 rebate.py config save NAME [options]
+    python3 rebate.py config list | show NAME | delete NAME | rename OLD NEW
 
 Examples:
     python3 rebate.py SAMPLE.jpg
     python3 rebate.py Leica_*.jpg --out ./out --size 3000 --border 0.015
+
+    # Save a reusable look, then apply it later (explicit flags override):
+    python3 rebate.py config save instagram --quality 100 --border 0.035 --size 3000
+    python3 rebate.py Photos-1-001/*.jpg --out /tmp/foo --config instagram
+    python3 rebate.py config list
+    python3 rebate.py config show instagram
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -34,6 +43,227 @@ GATE_H_MM = 24.0
 SPROCKET_PITCH_MM = 4.75
 # Fallback sprocket pitch in pixels (only used by _grid_aligned).
 SPROCKET_PITCH_FALLBACK = 730
+
+
+# ---------------------------------------------------------------------------
+# Named configs (presets)
+#
+# A config is a small JSON object of non-default flag values stored per-user
+# in ~/.config/rebate/configs.json (override the path with REBATE_CONFIG_FILE).
+# They let you reuse a fixed combination of options, e.g. the exact look used
+# for Instagram, without re-typing them every time.
+# ---------------------------------------------------------------------------
+
+# (dest, flag, type, default, help)
+_OPTION_SPECS = [
+    ("size", "--size", int, 0,
+     "canvas size (square); 0 = native resolution, no resampling (default 0)"),
+    ("margin", "--margin", float, 0.05,
+     "white margin around crop (fraction; default 0.05)"),
+    ("border", "--border", float, 0.025,
+     "film border to include around the gate as fraction of gate height "
+     "(default 0.025)"),
+    ("radius", "--radius", float, 0.015,
+     "corner radius as fraction of the final crop size (default 0.015)"),
+    ("radius_jitter", "--radius-jitter", float, 0.0,
+     "random +/- variation of the corner radius, as a fraction (0 = fixed "
+     "corners; default 0)"),
+    ("square_corner_chance", "--square-corner-chance", float, 0.2,
+     "probability (0-1) that one corner, or two corners on the same side, "
+     "are squared off instead of rounded (default 0.2)"),
+    ("border_jitter", "--border-jitter", float, 0.6,
+     "random shift of the black film border, as a fraction of the border "
+     "thickness (0 = perfectly even; default 0.6)"),
+    ("max_sprocket_border", "--max-sprocket-border", float, 0.03,
+     "max rebate (fraction of gate height) that still shows a sprocket "
+     "sliver; beyond it the crop keeps a small plain border (default 0.03)"),
+    ("offset_left", "--offset-left", float, 0.0,
+     "manual nudge of the crop's left edge, in pixels at full scan "
+     "resolution; positive reveals more of the left side (moves the edge "
+     "outward), negative trims inward. Applied to the final crop, so it "
+     "only ever touches this one edge; pair with --border-jitter 0 for a "
+     "precise fix (default 0)"),
+    ("offset_right", "--offset-right", float, 0.0,
+     "manual nudge of the crop's right edge, in pixels; positive reveals "
+     "more of the right side, negative trims inward (default 0)"),
+    ("offset_top", "--offset-top", float, 0.0,
+     "manual nudge of the crop's top edge, in pixels; positive reveals more "
+     "of the top, negative trims inward (default 0)"),
+    ("offset_bottom", "--offset-bottom", float, 0.0,
+     "manual nudge of the crop's bottom edge, in pixels; positive reveals "
+     "more of the bottom, negative trims inward (default 0)"),
+    ("roughness", "--roughness", float, 1.0,
+     "edge irregularity in px (0 = perfectly straight; default 1.0)"),
+    ("feather", "--feather", float, 3.0,
+     "edge softness in px (default 3.0)"),
+    ("seed", "--seed", int, None,
+     "random seed for edge texture (default: random)"),
+    ("quality", "--quality", int, 100,
+     "JPEG quality 1-100 (default 100)"),
+    ("sprocket_chance", "--sprocket-chance", float, 0.7,
+     "probability (0-1) that a tiny sliver of sprocket holes is visible on "
+     "at most one side (top or bottom) (default 0.7)"),
+    ("plain", "--plain", bool, False,
+     "crop just the 3:2 image with no border and no white canvas"),
+    ("debug", "--debug", bool, False,
+     "also save an annotated debug image"),
+    ("suffix", "--suffix", str, ".bordered.jpg",
+     "output filename suffix (default .bordered.jpg)"),
+]
+
+_DEST_TO_FLAG = {dest: flag for dest, flag, _, _, _ in _OPTION_SPECS}
+_TYPE_BY_DEST = {dest: typ for dest, _, typ, _, _ in _OPTION_SPECS}
+
+
+def _config_path():
+    if os.environ.get("REBATE_CONFIG_FILE"):
+        return os.environ["REBATE_CONFIG_FILE"]
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config")
+    return os.path.join(xdg, "rebate", "configs.json")
+
+
+def _load_configs():
+    path = _config_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        print(f"!! cannot read config file {path}", file=sys.stderr)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_configs(configs):
+    path = _config_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(configs, f, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def _coerce_config(cfg):
+    """Coerce stored JSON values to the option types (JSON is loosely typed)."""
+    out = {}
+    for key, value in cfg.items():
+        if key not in _TYPE_BY_DEST:
+            continue
+        typ = _TYPE_BY_DEST[key]
+        try:
+            if typ is bool:
+                out[key] = bool(value)
+            elif typ is int:
+                out[key] = int(value)
+            elif typ is float:
+                out[key] = float(value)
+            else:
+                out[key] = str(value)
+        except (TypeError, ValueError):
+            print(f"!! invalid config value for {key}: {value!r} (ignored)",
+                  file=sys.stderr)
+    return out
+
+
+def _add_common_options(parser, defaults):
+    """Add the shared visual/processing flags, seeded from `defaults`."""
+    for dest, flag, typ, dflt, help_ in _OPTION_SPECS:
+        default = defaults.get(dest, dflt)
+        if typ is bool:
+            parser.add_argument(flag, action="store_true",
+                                default=bool(default), help=help_)
+        else:
+            parser.add_argument(flag, type=typ, default=default, help=help_)
+
+
+def _explicit_option_names(argv):
+    """Return option dest names explicitly present in the raw argv tokens."""
+    names = set()
+    for dest, flag, _, _, _ in _OPTION_SPECS:
+        if any(tok == flag or tok.startswith(flag + "=") for tok in argv):
+            names.add(dest)
+    return names
+
+
+def config_command(argv):
+    ap = argparse.ArgumentParser(
+        prog="rebate config",
+        description="manage named rebate presets (configs)")
+    sub = ap.add_subparsers(dest="action", required=True)
+
+    p_list = sub.add_parser("list", help="list saved configs")
+
+    p_show = sub.add_parser("show", help="print one config")
+    p_show.add_argument("name")
+
+    p_save = sub.add_parser("save",
+                            help="save options as a config (later flags "
+                                 "override saved values)")
+    p_save.add_argument("name")
+    _add_common_options(p_save, {})
+
+    p_delete = sub.add_parser("delete", help="delete a config")
+    p_delete.add_argument("name")
+
+    p_rename = sub.add_parser("rename", help="rename a config")
+    p_rename.add_argument("old")
+    p_rename.add_argument("new")
+
+    args = ap.parse_args(argv)
+    configs = _load_configs()
+
+    if args.action == "list":
+        if not configs:
+            print("no saved configs")
+        else:
+            for name in sorted(configs):
+                print(name)
+
+    elif args.action == "show":
+        cfg = configs.get(args.name)
+        if cfg is None:
+            print(f"!! unknown config: {args.name}", file=sys.stderr)
+            return 1
+        if not isinstance(cfg, dict):
+            print(f"!! invalid config: {args.name}", file=sys.stderr)
+            return 1
+        print(f"[{args.name}]")
+        for key in sorted(cfg):
+            print(f"  {_DEST_TO_FLAG.get(key, key)} = {cfg[key]!r}")
+
+    elif args.action == "save":
+        # Store only the options the user actually wrote on the command line,
+        # so the config stays a minimal "combination" that merges over future
+        # defaults rather than freezing every setting.
+        names = _explicit_option_names(argv)
+        if not names:
+            print("!! no options given; nothing to save", file=sys.stderr)
+            return 1
+        cfg = {name: getattr(args, name) for name in names}
+        configs[args.name] = cfg
+        _save_configs(configs)
+        print(f"saved config '{args.name}':")
+        for key in sorted(cfg):
+            print(f"  {_DEST_TO_FLAG.get(key, key)} = {cfg[key]!r}")
+
+    elif args.action == "delete":
+        if configs.pop(args.name, None) is None:
+            print(f"!! unknown config: {args.name}", file=sys.stderr)
+            return 1
+        _save_configs(configs)
+        print(f"deleted config '{args.name}'")
+
+    elif args.action == "rename":
+        if args.old not in configs:
+            print(f"!! unknown config: {args.old}", file=sys.stderr)
+            return 1
+        configs[args.new] = configs.pop(args.old)
+        _save_configs(configs)
+        print(f"renamed '{args.old}' -> '{args.new}'")
+
+    return 0
 
 
 def _sprocket_candidates(gray):
@@ -537,6 +767,25 @@ def crop_with_border(gray, left, top, right, bot, border_frac,
     return crop_left, crop_top, crop_right, crop_bot
 
 
+def _nudge_crop(cl, ct, cr, cb, offset_left, offset_top, offset_right,
+                offset_bottom, w, h):
+    """Nudge each crop edge independently by its offset (px, + = reveal more).
+
+    Applied to the final crop window so one flag touches exactly one edge and
+    nothing else — fully deterministic, independent of --seed or
+    --border-jitter. Result is clamped to the image bounds.
+    """
+    cl = max(0, int(round(cl - offset_left)))
+    cr = min(w, int(round(cr + offset_right)))
+    ct = max(0, int(round(ct - offset_top)))
+    cb = min(h, int(round(cb + offset_bottom)))
+    if cl >= cr:
+        cl = cr - 1
+    if ct >= cb:
+        ct = cb - 1
+    return cl, ct, cr, cb
+
+
 def _rounded_mask(w, h, radius, inset=0, square_corners=None):
     """Rounded-rectangle mask, optionally inset from the image boundary.
 
@@ -687,10 +936,27 @@ def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
     return canvas
 
 
+def _save_image(path, img, quality=None):
+    """Write img to path, overwriting any existing file.
+
+    cv2.imwrite fails silently (returns False), so we check the result and
+    report failures to stderr — otherwise a locked/read-only target would
+    look like a successful overwrite while leaving the old file untouched.
+    """
+    if quality is None or path.lower().endswith(".png"):
+        ok = cv2.imwrite(path, img)
+    else:
+        ok = cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        print(f"!! failed to write {path}", file=sys.stderr)
+    return ok
+
+
 def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
             roughness, feather, seed, quality, sprocket_chance,
             radius_jitter, square_corner_chance=0.0, border_jitter=0.0,
-            max_sprocket_border=0.03, plain=False, debug=False,
+            max_sprocket_border=0.03, offset_left=0.0, offset_right=0.0,
+            offset_top=0.0, offset_bottom=0.0, plain=False, debug=False,
             suffix=".bordered.jpg"):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
@@ -713,15 +979,15 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
         cr = min(img.shape[1], int(round(right)))
         ct = max(0, int(round(top)))
         cb = min(img.shape[0], int(round(bot)))
+        cl, ct, cr, cb = _nudge_crop(cl, ct, cr, cb, offset_left, offset_top,
+                                     offset_right, offset_bottom,
+                                     img.shape[1], img.shape[0])
         crop = img[ct:cb, cl:cr]
         if portrait:
             crop = cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE)
         out_name = os.path.splitext(os.path.basename(path))[0] + suffix
         out_path = os.path.join(out_dir, out_name)
-        if out_name.lower().endswith(".png"):
-            cv2.imwrite(out_path, crop)
-        else:
-            cv2.imwrite(out_path, crop, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        _save_image(out_path, crop, quality)
         print(f"  {os.path.basename(path)}")
         print(f"    photo x[{cl}..{cr}] y[{ct}..{cb}] "
               f"({cr-cl}x{cb-ct}, ratio {(cr-cl)/(cb-ct):.2f}) -> {out_path}")
@@ -733,6 +999,14 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
                                       sprocket_chance, crop_seed, border_jitter,
                                       max_sprocket_border)
 
+    # Manual per-side nudge, applied to the FINAL crop window (after the
+    # border / jitter / sprocket logic), so each flag moves exactly one edge
+    # and nothing else — fully deterministic, unaffected by --seed or
+    # --border-jitter. Positive reveals more, negative trims inward.
+    cl, ct, cr, cb = _nudge_crop(cl, ct, cr, cb, offset_left, offset_top,
+                                 offset_right, offset_bottom,
+                                 img.shape[1], img.shape[0])
+
     if debug:
         dbg = img.copy()
         cv2.rectangle(dbg, (int(left), int(top)), (int(right), int(bot)),
@@ -743,7 +1017,7 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
         out_dbg = os.path.join(out_dir,
                                os.path.splitext(os.path.basename(path))[0]
                                + ".debug.jpg")
-        cv2.imwrite(out_dbg, dbg)
+        _save_image(out_dbg, dbg)
         print(f"    debug -> {out_dbg}")
 
     crop = img[ct:cb, cl:cr]
@@ -755,10 +1029,7 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
 
     out_name = os.path.splitext(os.path.basename(path))[0] + suffix
     out_path = os.path.join(out_dir, out_name)
-    if out_name.lower().endswith(".png"):
-        cv2.imwrite(out_path, result)
-    else:
-        cv2.imwrite(out_path, result, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    _save_image(out_path, result, quality)
 
     gate_w = right - left
     gate_h = bot - top
@@ -770,56 +1041,36 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "config":
+        sys.exit(config_command(sys.argv[2:]))
+
+    configs = _load_configs()
+
+    # Read --config up front so its values become the parser defaults and can
+    # be overridden by explicit flags (e.g. `--config instagram --size 3000`).
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default=None)
+    pre_args, remaining = pre.parse_known_args(sys.argv[1:])
+
+    cfg = {}
+    if pre_args.config:
+        stored = configs.get(pre_args.config)
+        if stored is None:
+            print(f"!! unknown config: {pre_args.config}", file=sys.stderr)
+            sys.exit(1)
+        if not isinstance(stored, dict):
+            print(f"!! invalid config: {pre_args.config}", file=sys.stderr)
+            sys.exit(1)
+        cfg = _coerce_config(stored)
+
     ap = argparse.ArgumentParser(description="rebate — film border cropper")
     ap.add_argument("inputs", nargs="+", help="input image files")
     ap.add_argument("--out", default=".", help="output directory")
-    ap.add_argument("--size", type=int, default=0,
-                    help="canvas size (square); 0 = native resolution, no "
-                         "resampling (default 0)")
-    ap.add_argument("--margin", type=float, default=0.05,
-                    help="white margin around crop (fraction; default 0.05)")
-    ap.add_argument("--border", type=float, default=0.025,
-                    help="film border to include around the gate as fraction "
-                         "of gate height (default 0.025)")
-    ap.add_argument("--radius", type=float, default=0.015,
-                    help="corner radius as fraction of the final crop size "
-                         "(default 0.015)")
-    ap.add_argument("--radius-jitter", type=float, default=0.0,
-                    help="random +/- variation of the corner radius, as a "
-                         "fraction (0 = fixed corners; default 0)")
-    ap.add_argument("--square-corner-chance", type=float, default=0.2,
-                    help="probability (0-1) that one corner, or two corners "
-                         "on the same side, are squared off instead of "
-                         "rounded (default 0.2)")
-    ap.add_argument("--border-jitter", type=float, default=0.6,
-                    help="random shift of the black film border, as a "
-                         "fraction of the border thickness (0 = perfectly "
-                         "even; default 0.6)")
-    ap.add_argument("--max-sprocket-border", type=float, default=0.03,
-                    help="max rebate (fraction of gate height) that still "
-                         "shows a sprocket sliver; beyond it the crop keeps "
-                         "a small plain border (default 0.03)")
-    ap.add_argument("--roughness", type=float, default=1.0,
-                    help="edge irregularity in px (0 = perfectly straight; "
-                         "default 1.0)")
-    ap.add_argument("--feather", type=float, default=3.0,
-                    help="edge softness in px (default 3.0)")
-    ap.add_argument("--seed", type=int, default=None,
-                    help="random seed for edge texture (default: random)")
-    ap.add_argument("--quality", type=int, default=100,
-                    help="JPEG quality 1-100 (default 100)")
-    ap.add_argument("--sprocket-chance", type=float, default=0.7,
-                    help="probability (0-1) that a tiny sliver of sprocket "
-                         "holes is visible on at most one side (top or "
-                         "bottom) (default 0.7)")
-    ap.add_argument("--plain", action="store_true",
-                    help="crop just the 3:2 image with no border and no white "
-                         "canvas")
-    ap.add_argument("--debug", action="store_true",
-                    help="also save an annotated debug image")
-    ap.add_argument("--suffix", default=".bordered.jpg",
-                    help="output filename suffix (default .bordered.jpg)")
-    args = ap.parse_args()
+    ap.add_argument("--config", default=pre_args.config,
+                    help="named config/preset to apply; manage with "
+                         "'rebate config save/list/show/delete/rename'")
+    _add_common_options(ap, cfg)
+    args = ap.parse_args(remaining)
 
     os.makedirs(args.out, exist_ok=True)
 
@@ -828,7 +1079,9 @@ def main():
                 args.radius, args.roughness, args.feather, args.seed,
                 args.quality, args.sprocket_chance, args.radius_jitter,
                 args.square_corner_chance, args.border_jitter,
-                args.max_sprocket_border, args.plain, args.debug, args.suffix)
+                args.max_sprocket_border, args.offset_left, args.offset_right,
+                args.offset_top, args.offset_bottom, args.plain, args.debug,
+                args.suffix)
 
 
 if __name__ == "__main__":

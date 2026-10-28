@@ -54,11 +54,43 @@ Or explicitly:
 /opt/homebrew/bin/python3.11 rebate.py SAMPLE.jpg --out ./out
 ```
 
+## Configs (presets)
+
+Save a fixed combination of flags under a name and reuse it with
+`--config NAME`. Configs are stored per user in
+`~/.config/rebate/configs.json` (override the location with
+`REBATE_CONFIG_FILE`).
+
+```bash
+# Save the exact combination you use for Instagram:
+./rebate.py config save instagram --quality 100 --border 0.035 --size 3000
+
+# Apply it (input files and --out are not part of a config):
+./rebate.py Photos-1-001/*.jpg --out /tmp/foo --config instagram
+
+# Explicit flags always override the saved values:
+./rebate.py Photos-1-001/*.jpg --out /tmp/foo --config instagram --size 1600
+```
+
+Manage configs:
+
+```bash
+./rebate.py config list          # names
+./rebate.py config show NAME     # one config's flags
+./rebate.py config rename OLD NEW
+./rebate.py config delete NAME
+```
+
+A config stores only the flags you actually pass at save time (not the
+built-in defaults, and never `--out` or the input files), so it stays a
+minimal "combination" and keeps working even if a default changes later.
+
 ## Options
 
 | flag          | default         | meaning                                                  |
 |---------------|-----------------|----------------------------------------------------------|
 | `--out`       | `.`             | output directory                                         |
+| `--config`    | —               | named config/preset to apply; explicit flags override saved values (see **Configs**) |
 | `--size`      | `0`             | square canvas size; `0` = native resolution (recommended)|
 | `--margin`    | `0.05`          | white margin around the crop (fraction)                  |
 | `--border`    | `0.025`         | film border kept around the gate (fraction of gate height)|
@@ -70,6 +102,7 @@ Or explicitly:
 | `--feather`   | `3.0`           | edge softness in px (0 = hard edge)                      |
 | `--sprocket-chance` | `0.7`      | chance (0-1) a tiny sliver of sprockets is visible, on at most one side (top or bottom) |
 | `--max-sprocket-border` | `0.03` | max rebate (fraction of gate height) that still shows a sprocket sliver; beyond it the crop keeps a small plain border |
+| `--offset-left` / `--offset-right` / `--offset-top` / `--offset-bottom` | `0` | manual nudge of one crop edge, in pixels at full scan resolution; positive reveals more of that side, negative trims it inward. Deterministic and applied to the final crop, so each flag only ever moves its own edge. Use when the detector occasionally cuts a sliver off one edge; pair with `--border-jitter 0` (and a fixed `--seed`) so nothing else moves while you tune |
 | `--seed`      | random          | random seed for edge texture (for reproducibility)       |
 | `--quality`   | `100`           | JPEG quality 1-100                                       |
 | `--plain`     | off             | crop just the 3:2 image, no border, no white canvas      |
