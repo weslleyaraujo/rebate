@@ -38,6 +38,8 @@ npm run test:e2e   # Playwright E2E (headless Chrome: upload → preview → exp
 - `⌘/Ctrl Z` — undo param / offset change
 - `⌘/Ctrl ⇧ Z` (or `⌘/Ctrl Y`) — redo
 - `←` / `→` — previous / next frame (filmstrip auto-scrolls to keep it visible)
+- `F` — enter / exit full-screen slideshow
+- `Esc` — exit slideshow
 - `Delete` / `Backspace` — remove selected frame
 - `B` / `A` — before / after view
 - Preview: **scroll** to zoom, **drag** to pan, **double-click** to toggle 1×/3×
@@ -77,7 +79,8 @@ Deploy `web/dist/` to any static host. `base: './'` is already set in
 4. **Export** — **Download** re-runs every frame at native resolution and
    bundles the results into a timestamped ZIP (or download a single frame from
    the Frame panel). If "debug" is enabled, each frame also emits a
-   `.debug.jpg` with gate/crop rectangles.
+   `.debug.jpg` with gate/crop rectangles. A **Slideshow** button (or `F`) opens
+   a full-screen viewer — navigate with `←`/`→`, close with `Esc`/`F`.
 
 ## Params ↔ CLI
 

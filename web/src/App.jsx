@@ -4,6 +4,7 @@ import Filmstrip from './components/Filmstrip.jsx';
 import ParamsPanel from './components/ParamsPanel.jsx';
 import FramePanel from './components/FramePanel.jsx';
 import Preview from './components/Preview.jsx';
+import Slideshow from './components/Slideshow.jsx';
 import ExportBar from './components/ExportBar.jsx';
 import { DEFAULTS, mergeParams, scaleParamsForPreview, suffixFor } from './lib/params.js';
 import {
@@ -48,6 +49,7 @@ export default function App() {
   const [dropActive, setDropActive] = useState(false);
   const [previewFullRes, setPreviewFullRes] = useState(false);
   const [editorMode, setEditorMode] = useState(false);
+  const [slideshow, setSlideshow] = useState(false);
   const [lockedIds, setLockedIds] = useState(() => new Set());
   const [theme, setTheme] = useState(() => {
     try {
@@ -81,6 +83,8 @@ export default function App() {
   previewFullResRef.current = previewFullRes;
   const editorModeRef = useRef(editorMode);
   editorModeRef.current = editorMode;
+  const slideshowRef = useRef(slideshow);
+  slideshowRef.current = slideshow;
   const savedOverridesRef = useRef({}); // filename -> overrides (restored on upload)
   const savedLockedRef = useRef(new Set()); // filenames locked in a previous session
 
@@ -264,6 +268,20 @@ export default function App() {
     [runPreviewById],
   );
 
+  // Regenerate every unlocked frame (the selected one a touch sooner so the
+  // visible preview stays responsive). Used when a GLOBAL param changes, since
+  // that affects the whole roll, not just the selected frame.
+  const rePreviewAll = useCallback(
+    (selectedDelay = 120, otherDelay = 700) => {
+      const selected = selectedRef.current;
+      for (const im of imagesRef.current) {
+        if (lockedIdsRef.current.has(im.id)) continue;
+        debouncedRePreview(im.id, im.id === selected ? selectedDelay : otherDelay);
+      }
+    },
+    [debouncedRePreview],
+  );
+
   // ---- undo / redo (params + per-frame overrides) ----
 
   const scheduleHistoryCommit = useCallback(() => {
@@ -290,8 +308,8 @@ export default function App() {
     setGlobalParams(snap.globalParams);
     setOverrides(snap.overrides);
     setHistoryTick((t) => t + 1);
-    if (selectedRef.current) debouncedRePreview(selectedRef.current);
-  }, [debouncedRePreview]);
+    rePreviewAll();
+  }, [rePreviewAll]);
 
   const redo = useCallback(() => {
     clearTimeout(historyTimerRef.current);
@@ -302,8 +320,8 @@ export default function App() {
     setGlobalParams(snap.globalParams);
     setOverrides(snap.overrides);
     setHistoryTick((t) => t + 1);
-    if (selectedRef.current) debouncedRePreview(selectedRef.current);
-  }, [debouncedRePreview]);
+    rePreviewAll();
+  }, [rePreviewAll]);
 
   const canUndo = historyRef.current.index > 0;
   const canRedo = historyRef.current.index < historyRef.current.stack.length - 1;
@@ -386,9 +404,9 @@ export default function App() {
     (key, value) => {
       setGlobalParams((prev) => ({ ...prev, [key]: value }));
       scheduleHistoryCommit();
-      if (selectedRef.current) debouncedRePreview(selectedRef.current);
+      rePreviewAll();
     },
-    [scheduleHistoryCommit, debouncedRePreview],
+    [scheduleHistoryCommit, rePreviewAll],
   );
 
   const onOverrideChange = useCallback(
@@ -438,9 +456,9 @@ export default function App() {
     (params) => {
       setGlobalParams({ ...DEFAULTS, ...params });
       scheduleHistoryCommit();
-      if (selectedRef.current) debouncedRePreview(selectedRef.current);
+      rePreviewAll();
     },
-    [scheduleHistoryCommit, debouncedRePreview],
+    [scheduleHistoryCommit, rePreviewAll],
   );
 
   // ---- per-frame random look: re-roll / lock / copy / apply-to-all ----
@@ -503,6 +521,10 @@ export default function App() {
 
   const onOpenEditor = useCallback(() => {
     setEditorMode(true);
+  }, []);
+
+  const onToggleSlideshow = useCallback(() => {
+    setSlideshow((v) => !v);
   }, []);
 
   const onRegenerate = useCallback(
@@ -703,6 +725,14 @@ export default function App() {
       }
       if (isTyping(e.target)) return;
 
+      if (e.key === 'Escape') {
+        if (slideshowRef.current) {
+          e.preventDefault();
+          setSlideshow(false);
+        }
+        return;
+      }
+
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
         if (selectedRef.current) onDeleteImage(selectedRef.current);
@@ -714,7 +744,10 @@ export default function App() {
         return;
       }
       const k = e.key.toLowerCase();
-      if (k === 'a') setViewMode('after');
+      if (k === 'f') {
+        e.preventDefault();
+        setSlideshow((v) => !v);
+      } else if (k === 'a') setViewMode('after');
       else if (k === 'b') setViewMode('before');
     };
 
@@ -861,6 +894,7 @@ export default function App() {
                 onDetectionOverrideChange(selectedId, 'sprocket_override', null);
               }}
               locked={selectedId ? lockedIds.has(selectedId) : false}
+              onToggleSlideshow={onToggleSlideshow}
             />
           )}
 
@@ -899,6 +933,17 @@ export default function App() {
             <div className="text-xs text-neutral-400 mt-1">they'll join the current roll</div>
           </div>
         </div>
+      )}
+
+      {slideshow && selectedImage && (
+        <Slideshow
+          image={selectedImage}
+          index={Math.max(0, images.findIndex((im) => im.id === selectedId))}
+          total={images.length}
+          onPrev={() => moveSelection(-1)}
+          onNext={() => moveSelection(1)}
+          onClose={onToggleSlideshow}
+        />
       )}
     </div>
   );
