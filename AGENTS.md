@@ -76,7 +76,18 @@ Most full-strip scans are ~5700×4900px; the slide roll is ~5600×3750px.
 | `--debug` | off | save annotated debug image |
 | `--suffix` | `.bordered.jpg` | output suffix (`.png` = lossless) |
 
-## Code structure (`rebate.py`)
+## Code structure (`rebate/` package)
+
+The single-file script was split so the pure image-processing core can run both
+as a CLI and in the browser (Pyodide/WASM):
+
+- `rebate/core.py` — pure, in-memory pipeline (detection, crop, compose,
+  `process_image`, `decode_image`/`encode_image`); imports only `cv2` + `numpy`.
+- `rebate/cli.py` — CLI client (argparse, configs, offset shorthand, file IO);
+  delegates to `core.process_image`.
+- `rebate/__init__.py` — re-exports everything so `import rebate` is unchanged.
+- `rebate.py` — executable launcher.
+- `web/` — React/Vite/Tailwind browser client (Pyodide Web Worker).
 
 Detection / geometry:
 
@@ -163,16 +174,48 @@ wanted "a small part of the rebate + a tiny little bit of sprocket".
 - One roll ships both `positives/` (use this) and `positives-borderless/` (no
   sprockets — do NOT use for sprocket work).
 
+## Web app (WASM)
+
+- The browser client runs the *same* `rebate/core.py` in **Pyodide 314.x**, which
+  ships `opencv-python 4.11`, `numpy`, `scipy`, `Pillow` as built-in packages.
+- Pyodide runs in a Web Worker; the main thread posts image bytes, the worker
+  decodes → `process_image` → encodes → posts bytes back. Images never leave
+  the page.
+- **Pixel parity**: native CLI (cv2 5.0.0) and WASM (cv2 4.11.0) produce
+  identical geometry (gate/crop rects) and near-identical pixels — exact on the
+  synthetic/grayscale scans, within ~1 LSB on real color scans due to cv2 SIMD
+  differences in blur/resize (imperceptible). JPEG *file bytes* differ because
+  the two cv2 versions use different encoders.
+- OpenCV in Pyodide is single-threaded / non-SIMD (`cv2.getNumThreads() == 1`);
+  a native-res ~28 MP frame processes in ~2.6 s. `cv2.setNumThreads(n)` is a
+  harmless no-op there.
+- **Browser defaults**: always pass every param explicitly from the JS param
+  schema (`web/src/lib/params.js`); do not rely on `process_image` function
+  defaults, which intentionally differ from CLI defaults for `border_jitter`
+  (0.0 vs 0.6) and `square_corner_chance` (0.0 vs 0.2).
+- **WASM gotcha**: numpy integer reductions use 32-bit accumulators on wasm32 —
+  `int(arr.sum())` on a >~16 MP uint8 array overflows. The core avoids full-array
+  integer sums; use float means/chunked sums in any diagnostics.
+
 ## Tests
 
 ```bash
+# Python: core + CLI client + integration (49 tests)
 /opt/homebrew/bin/python3.11 -m unittest discover -s tests -p 'test_*.py'
+
+# Browser client (Vitest, 18 tests)
+cd web && npm test
 ```
 
-18 tests in `tests/test_rebate.py` cover masks, grid fitting, gate/photo
-detection, portrait rotation, compose, and randomness (sprocket band edges,
-border jitter, sprocket-at-most-one-side, thick-rebate skip, and squared
-corner chance).
+- `tests/test_core.py` — the pure, in-memory core (`process_image`, codecs,
+  portrait, seed determinism) as used by the browser.
+- `tests/test_cli.py` — the CLI client (`_save_image`, `process`, `main` exit
+  codes).
+- `tests/test_rebate.py` — integration through the `import rebate` surface:
+  masks, grid fitting, gate/photo detection, portrait rotation, compose,
+  randomness, offsets, and config presets.
+- `web/src/lib/*.test.js` — browser-client logic (param schema/defaults,
+  preview scaling, presets, ZIP).
 
 ## Regenerating the README samples
 

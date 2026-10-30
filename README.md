@@ -54,6 +54,22 @@ Or explicitly:
 /opt/homebrew/bin/python3.11 rebate.py SAMPLE.jpg --out ./out
 ```
 
+## Web app (browser)
+
+A browser client runs the **same Python core** via Pyodide/WebAssembly: drag a
+roll of frames in, tweak params (including per-frame offsets and a visual
+drag-to-fix detection editor), preview before/after, and download
+full-resolution results — all locally, nothing uploaded.
+
+```bash
+cd web
+npm install
+npm run dev       # develop
+npm run build     # static site in web/dist (deploy anywhere / GitHub Pages)
+```
+
+See `web/README.md` for details.
+
 ## Configs (presets)
 
 Save a fixed combination of flags under a name and reuse it with
@@ -175,8 +191,24 @@ positive (slide) film.
 
 Requires: `opencv-python-headless` and `numpy`.
 
+## Code structure
+
+- `rebate/core.py` — pure, in-memory image processing (detection, crop, compose,
+  `process_image`, `decode_image`/`encode_image`). No file IO / argparse, so it
+  runs in both the CLI and the browser (Pyodide).
+- `rebate/cli.py` — the CLI client: argparse, named configs, offset shorthand,
+  file IO. Delegates to `core.process_image`.
+- `rebate/__init__.py` — re-exports both modules so `import rebate` stays
+  compatible with the original single-file script.
+- `rebate.py` — executable launcher (`rebate.cli.main`).
+- `web/` — React + Vite + Tailwind browser client (Pyodide Web Worker).
+
 ## Tests
 
 ```bash
+# Python (core + CLI client + integration)
 /opt/homebrew/bin/python3.11 -m unittest discover -s tests -p 'test_*.py'
+
+# Browser client (Vitest)
+cd web && npm test
 ```

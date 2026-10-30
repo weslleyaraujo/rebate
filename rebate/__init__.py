@@ -1,0 +1,111 @@
+"""rebate — film border scanner.
+
+This package exposes the pure image-processing core (`rebate.core`) and the
+CLI client (`rebate.cli`). Re-exporting every name here keeps `import rebate`
+fully backward compatible with the original single-file module (including
+underscore-prefixed internals used by the test suite).
+"""
+
+from .core import (
+    ASPECT,
+    GATE_H_MM,
+    SPROCKET_PITCH_MM,
+    SPROCKET_PITCH_FALLBACK,
+    _sprocket_candidates,
+    _grid_aligned,
+    _grid_fit,
+    _sprocket_info,
+    _row_activity,
+    _col_activity,
+    _runs1d,
+    _merge_runs,
+    _photo_edges_in,
+    _detect_photo_edges,
+    _photo_edges_x,
+    detect_gate,
+    detect_photo_gate,
+    _sprocket_centers,
+    _detect_center_x,
+    _sprocket_band_edges,
+    _sprocket_inner_edges,
+    crop_with_border,
+    _nudge_crop,
+    _rounded_mask,
+    _organic_mask,
+    compose_on_white,
+    process_image,
+    ProcessResult,
+    decode_image,
+    encode_image,
+)
+
+from .cli import (
+    _OPTION_SPECS,
+    _DEST_TO_FLAG,
+    _TYPE_BY_DEST,
+    _config_path,
+    _load_configs,
+    _save_configs,
+    _coerce_config,
+    _add_common_options,
+    _explicit_option_names,
+    config_command,
+    _resolve_offsets,
+    _offsets_active,
+    _save_image,
+    process,
+    main,
+)
+
+__all__ = [
+    # core: constants
+    "ASPECT",
+    "GATE_H_MM",
+    "SPROCKET_PITCH_MM",
+    "SPROCKET_PITCH_FALLBACK",
+    # core: detection
+    "_sprocket_candidates",
+    "_grid_aligned",
+    "_grid_fit",
+    "_sprocket_info",
+    "_row_activity",
+    "_col_activity",
+    "_runs1d",
+    "_merge_runs",
+    "_photo_edges_in",
+    "_detect_photo_edges",
+    "_photo_edges_x",
+    "detect_gate",
+    "detect_photo_gate",
+    "_sprocket_centers",
+    "_detect_center_x",
+    "_sprocket_band_edges",
+    "_sprocket_inner_edges",
+    # core: crop / compose
+    "crop_with_border",
+    "_nudge_crop",
+    "_rounded_mask",
+    "_organic_mask",
+    "compose_on_white",
+    # core: in-memory pipeline + codec bridge
+    "process_image",
+    "ProcessResult",
+    "decode_image",
+    "encode_image",
+    # cli
+    "_OPTION_SPECS",
+    "_DEST_TO_FLAG",
+    "_TYPE_BY_DEST",
+    "_config_path",
+    "_load_configs",
+    "_save_configs",
+    "_coerce_config",
+    "_add_common_options",
+    "_explicit_option_names",
+    "config_command",
+    "_resolve_offsets",
+    "_offsets_active",
+    "_save_image",
+    "process",
+    "main",
+]
