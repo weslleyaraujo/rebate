@@ -427,5 +427,46 @@ class TestConfigs(unittest.TestCase):
         self.assertEqual(over.quality, 91)
 
 
+class TestOffsetFlags(unittest.TestCase):
+    """--offset-x / --offset-y combos and the offset/jitter conflict rules."""
+
+    def _ns(self, **kw):
+        defaults = dict(offset_left=0.0, offset_right=0.0, offset_top=0.0,
+                        offset_bottom=0.0, offset_x=None, offset_y=None)
+        defaults.update(kw)
+        return argparse.Namespace(**defaults)
+
+    def test_resolve_offsets_specifics_passthrough(self):
+        args = self._ns(offset_left=10.0, offset_right=20.0,
+                        offset_top=30.0, offset_bottom=40.0)
+        self.assertEqual(rebate._resolve_offsets(args, set()),
+                         (10.0, 20.0, 30.0, 40.0))
+
+    def test_resolve_offset_x_combo(self):
+        args = self._ns(offset_x=15.0)
+        self.assertEqual(rebate._resolve_offsets(args, {"offset_x"}),
+                         (15.0, 15.0, 0.0, 0.0))
+
+    def test_resolve_specific_beats_combo(self):
+        args = self._ns(offset_x=15.0, offset_y=25.0,
+                        offset_left=99.0, offset_bottom=-5.0)
+        explicit = {"offset_x", "offset_y", "offset_left", "offset_bottom"}
+        self.assertEqual(rebate._resolve_offsets(args, explicit),
+                         (99.0, 15.0, 25.0, -5.0))
+
+    def test_offsets_active(self):
+        ns = self._ns
+        # Nothing set -> inactive.
+        self.assertFalse(rebate._offsets_active(ns(), set(), 0, 0, 0, 0))
+        # A non-zero edge value activates.
+        self.assertTrue(rebate._offsets_active(ns(), set(), 5, 0, 0, 0))
+        # A combo flag activates even if the resolved value is what triggers.
+        self.assertTrue(rebate._offsets_active(ns(offset_x=1.0),
+                                               {"offset_x"}, 1.0, 1.0, 0, 0))
+        # Explicitly passing an offset (even zero) counts as "using" it.
+        self.assertTrue(rebate._offsets_active(ns(), {"offset_top"},
+                                               0, 0, 0, 0))
+
+
 if __name__ == "__main__":
     unittest.main()

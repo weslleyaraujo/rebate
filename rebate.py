@@ -73,7 +73,8 @@ _OPTION_SPECS = [
      "are squared off instead of rounded (default 0.2)"),
     ("border_jitter", "--border-jitter", float, 0.6,
      "random shift of the black film border, as a fraction of the border "
-     "thickness (0 = perfectly even; default 0.6)"),
+     "thickness (0 = perfectly even; default 0.6). Forced to 0 when any "
+     "--offset-* is used"),
     ("max_sprocket_border", "--max-sprocket-border", float, 0.03,
      "max rebate (fraction of gate height) that still shows a sprocket "
      "sliver; beyond it the crop keeps a small plain border (default 0.03)"),
@@ -81,8 +82,8 @@ _OPTION_SPECS = [
      "manual nudge of the crop's left edge, in pixels at full scan "
      "resolution; positive reveals more of the left side (moves the edge "
      "outward), negative trims inward. Applied to the final crop, so it "
-     "only ever touches this one edge; pair with --border-jitter 0 for a "
-     "precise fix (default 0)"),
+     "only ever touches this one edge; --border-jitter is forced to 0 "
+     "whenever an offset is used (default 0)"),
     ("offset_right", "--offset-right", float, 0.0,
      "manual nudge of the crop's right edge, in pixels; positive reveals "
      "more of the right side, negative trims inward (default 0)"),
@@ -92,6 +93,14 @@ _OPTION_SPECS = [
     ("offset_bottom", "--offset-bottom", float, 0.0,
      "manual nudge of the crop's bottom edge, in pixels; positive reveals "
      "more of the bottom, negative trims inward (default 0)"),
+    ("offset_x", "--offset-x", float, None,
+     "set BOTH left and right crop offsets at once, in pixels at full scan "
+     "resolution; positive reveals more, negative trims inward. A specific "
+     "--offset-left/--offset-right wins if also given (default: unset)"),
+    ("offset_y", "--offset-y", float, None,
+     "set BOTH top and bottom crop offsets at once, in pixels at full scan "
+     "resolution; positive reveals more, negative trims inward. A specific "
+     "--offset-top/--offset-bottom wins if also given (default: unset)"),
     ("roughness", "--roughness", float, 1.0,
      "edge irregularity in px (0 = perfectly straight; default 1.0)"),
     ("feather", "--feather", float, 3.0,
@@ -264,6 +273,39 @@ def config_command(argv):
         print(f"renamed '{args.old}' -> '{args.new}'")
 
     return 0
+
+
+def _resolve_offsets(args, explicit):
+    """Resolve --offset-x / --offset-y shorthand into the four edge offsets.
+
+    Returns (left, right, top, bottom). A specific edge flag (--offset-left,
+    ...) wins over the combo, so you can nudge both sides at once and then
+    tweak just one edge.
+    """
+    left = args.offset_left
+    right = args.offset_right
+    top = args.offset_top
+    bottom = args.offset_bottom
+    if args.offset_x is not None:
+        if "offset_left" not in explicit:
+            left = args.offset_x
+        if "offset_right" not in explicit:
+            right = args.offset_x
+    if args.offset_y is not None:
+        if "offset_top" not in explicit:
+            top = args.offset_y
+        if "offset_bottom" not in explicit:
+            bottom = args.offset_y
+    return left, right, top, bottom
+
+
+def _offsets_active(args, explicit, left, right, top, bottom):
+    """True if any offset is in effect (or was explicitly requested)."""
+    return (left != 0 or right != 0 or top != 0 or bottom != 0
+            or args.offset_x is not None or args.offset_y is not None
+            or "offset_left" in explicit or "offset_right" in explicit
+            or "offset_top" in explicit or "offset_bottom" in explicit
+            or "offset_x" in explicit or "offset_y" in explicit)
 
 
 def _sprocket_candidates(gray):
@@ -1072,6 +1114,25 @@ def main():
     _add_common_options(ap, cfg)
     args = ap.parse_args(remaining)
 
+    # Resolve the --offset-x / --offset-y shorthand into the four edge
+    # offsets (a specific edge flag wins over the combo).
+    explicit = _explicit_option_names(remaining)
+    offset_left, offset_right, offset_top, offset_bottom = _resolve_offsets(
+        args, explicit)
+
+    # Offsets are deterministic nudges, so they need a fixed base crop. If
+    # any offset is in effect, force --border-jitter to 0 (when the user did
+    # not set it explicitly), and refuse an explicit non-zero jitter — that
+    # combination would keep shifting the edges out from under the offset.
+    if _offsets_active(args, explicit, offset_left, offset_right,
+                       offset_top, offset_bottom):
+        if "border_jitter" in explicit and args.border_jitter != 0:
+            print("!! --offset-* needs a stable crop; pass --border-jitter 0 "
+                  "(or omit --border-jitter) when using offsets",
+                  file=sys.stderr)
+            sys.exit(1)
+        args.border_jitter = 0.0
+
     os.makedirs(args.out, exist_ok=True)
 
     for path in args.inputs:
@@ -1079,8 +1140,8 @@ def main():
                 args.radius, args.roughness, args.feather, args.seed,
                 args.quality, args.sprocket_chance, args.radius_jitter,
                 args.square_corner_chance, args.border_jitter,
-                args.max_sprocket_border, args.offset_left, args.offset_right,
-                args.offset_top, args.offset_bottom, args.plain, args.debug,
+                args.max_sprocket_border, offset_left, offset_right,
+                offset_top, offset_bottom, args.plain, args.debug,
                 args.suffix)
 
 
