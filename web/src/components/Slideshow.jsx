@@ -29,6 +29,13 @@ export default function Slideshow({ image, index, total, onPrev, onNext, onClose
       <div className="flex-1 min-h-0 relative">
         <ZoomableImage src={image?.afterUrl} alt={image?.name} />
 
+        {image?.status === 'processing' && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/40 pointer-events-none">
+            <div className="w-9 h-9 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+            <div className="text-sm text-neutral-200">Loading full-res…</div>
+          </div>
+        )}
+
         <button
           type="button"
           title="Previous (←)"

@@ -7,6 +7,7 @@ import Preview from './components/Preview.jsx';
 import Slideshow from './components/Slideshow.jsx';
 import ExportBar from './components/ExportBar.jsx';
 import { DEFAULTS, mergeParams, scaleParamsForPreview, suffixFor } from './lib/params.js';
+import { pinDetectionFromPreview } from './lib/detection.js';
 import {
   loadUserPresets,
   saveUserPresets,
@@ -47,10 +48,11 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(null);
   const [dropActive, setDropActive] = useState(false);
-  const [previewFullRes, setPreviewFullRes] = useState(false);
   const [editorMode, setEditorMode] = useState(false);
   const [slideshow, setSlideshow] = useState(false);
   const [lockedIds, setLockedIds] = useState(() => new Set());
+  const [restoredIds, setRestoredIds] = useState(() => new Set());
+  const [bannerHidden, setBannerHidden] = useState(false);
   const [theme, setTheme] = useState(() => {
     try {
       return localStorage.getItem(THEME_KEY) || 'system';
@@ -79,8 +81,8 @@ export default function App() {
   const historyTimerRef = useRef(null);
   const lockedIdsRef = useRef(lockedIds);
   lockedIdsRef.current = lockedIds;
-  const previewFullResRef = useRef(previewFullRes);
-  previewFullResRef.current = previewFullRes;
+  const restoredIdsRef = useRef(restoredIds);
+  restoredIdsRef.current = restoredIds;
   const editorModeRef = useRef(editorMode);
   editorModeRef.current = editorMode;
   const slideshowRef = useRef(slideshow);
@@ -193,7 +195,7 @@ export default function App() {
   }, []);
 
   const runPreview = useCallback(
-    async (imageEntry) => {
+    async (imageEntry, forceFullRes = false) => {
       const id = imageEntry.id;
       const seq = (seqRef.current.get(id) || 0) + 1;
       seqRef.current.set(id, seq);
@@ -205,7 +207,7 @@ export default function App() {
         let buf;
         let factor;
         let params;
-        if (previewFullResRef.current) {
+        if (forceFullRes) {
           // High-res preview: native resolution (exact export detail).
           buf = await readFileAsArrayBuffer(imageEntry.file);
           factor = 1;
@@ -257,6 +259,26 @@ export default function App() {
       if (img) runPreview(img);
     },
     [runPreview],
+  );
+
+  // Native-resolution preview for a single frame, used by the slideshow. Does
+  // NOT skip locked frames: a locked frame keeps its frozen params, but its
+  // resolution can still be upgraded to full-res for display.
+  const runFullResById = useCallback(
+    (id) => {
+      const img = imagesRef.current.find((im) => im.id === id);
+      if (img) runPreview(img, true);
+    },
+    [runPreview],
+  );
+
+  // Make sure a frame's current preview is native resolution (factor === 1).
+  const ensureFullRes = useCallback(
+    (id) => {
+      const img = imagesRef.current.find((im) => im.id === id);
+      if (img && img.previewFactor !== 1) runFullResById(id);
+    },
+    [runFullResById],
   );
 
   const debouncedRePreview = useCallback(
@@ -344,19 +366,34 @@ export default function App() {
       }));
       setImages((prev) => [...prev, ...batch]);
       setSelectedId((prev) => prev ?? batch[0].id);
+      // Re-show the restored-settings notice on any new upload (a previous ✕
+      // dismiss only hides it until the next upload / refresh).
+      setBannerHidden(false);
 
       // Restore per-file overrides / lock from a previous session (keyed by
       // filename), so re-uploading the same roll keeps its tweaks.
       const restoredOverrides = {};
       const restoredLocked = [];
+      const restoredBatchIds = [];
       for (const im of batch) {
         if (savedOverridesRef.current[im.name]) {
           restoredOverrides[im.id] = savedOverridesRef.current[im.name];
+          restoredBatchIds.push(im.id);
         }
         if (savedLockedRef.current.has(im.name)) restoredLocked.push(im.id);
       }
       if (Object.keys(restoredOverrides).length) {
-        setOverrides((prev) => ({ ...prev, ...restoredOverrides }));
+        // Update the ref synchronously so the immediate runPreview below sees
+        // the restored overrides (and preserved seed) instead of pinning a new
+        // random seed / dropping the saved offsets & detection fix.
+        const merged = { ...overridesRef.current, ...restoredOverrides };
+        overridesRef.current = merged;
+        setOverrides(merged);
+        setRestoredIds((prev) => {
+          const n = new Set(prev);
+          for (const id of restoredBatchIds) n.add(id);
+          return n;
+        });
       }
       if (restoredLocked.length) {
         setLockedIds((prev) => {
@@ -397,6 +434,22 @@ export default function App() {
     const next = imgs[(idx + dir + imgs.length) % imgs.length];
     if (next) setSelectedId(next.id);
   }, []);
+
+  // Slideshow navigation: select the next/prev frame AND make sure it renders
+  // at native resolution before showing it.
+  const slideshowNav = useCallback(
+    (dir) => {
+      const imgs = imagesRef.current;
+      if (!imgs.length) return;
+      const idx = imgs.findIndex((im) => im.id === selectedRef.current);
+      const next = imgs[(idx + dir + imgs.length) % imgs.length];
+      if (next) {
+        setSelectedId(next.id);
+        ensureFullRes(next.id);
+      }
+    },
+    [ensureFullRes],
+  );
 
   // ---- params ----
 
@@ -446,11 +499,34 @@ export default function App() {
         n.delete(imageId);
         return n;
       });
+      setRestoredIds((prev) => {
+        const n = new Set(prev);
+        n.delete(imageId);
+        return n;
+      });
       scheduleHistoryCommit();
       debouncedRePreview(imageId);
     },
     [scheduleHistoryCommit, debouncedRePreview],
   );
+
+  const resetAllRestored = useCallback(() => {
+    const ids = [...restoredIdsRef.current];
+    if (!ids.length) return;
+    setOverrides((prev) => {
+      const n = { ...prev };
+      for (const id of ids) delete n[id];
+      return n;
+    });
+    setLockedIds((prev) => {
+      const n = new Set(prev);
+      for (const id of ids) n.delete(id);
+      return n;
+    });
+    setRestoredIds(new Set());
+    scheduleHistoryCommit();
+    for (const id of ids) debouncedRePreview(id);
+  }, [scheduleHistoryCommit, debouncedRePreview]);
 
   const applyPreset = useCallback(
     (params) => {
@@ -485,22 +561,21 @@ export default function App() {
   );
 
   const onToggleFullRes = useCallback(() => {
-    // Flip the ref synchronously so the immediate re-preview below uses the new
-    // mode (state alone would lag one render).
-    const next = !previewFullResRef.current;
-    previewFullResRef.current = next;
-    setPreviewFullRes(next);
     const id = selectedRef.current;
-    if (id) {
-      // Cancel any pending debounced preview and regenerate right away, so the
-      // button actually re-renders the selected frame at the new resolution.
-      if (debounceRef.current.has(id)) {
-        clearTimeout(debounceRef.current.get(id));
-        debounceRef.current.delete(id);
-      }
-      runPreviewById(id);
+    if (!id) return;
+    // Cancel any pending debounced preview and regenerate right away.
+    if (debounceRef.current.has(id)) {
+      clearTimeout(debounceRef.current.get(id));
+      debounceRef.current.delete(id);
     }
-  }, [runPreviewById]);
+    const img = imagesRef.current.find((im) => im.id === id);
+    if (img && img.previewFactor === 1) {
+      // Currently full-res -> drop back to the fast 2560px preview.
+      runPreview(img, false);
+    } else {
+      runFullResById(id);
+    }
+  }, [runPreview, runFullResById]);
 
   const onToggleEditor = useCallback(() => {
     if (editorModeRef.current) {
@@ -524,8 +599,12 @@ export default function App() {
   }, []);
 
   const onToggleSlideshow = useCallback(() => {
-    setSlideshow((v) => !v);
-  }, []);
+    const opening = !slideshowRef.current;
+    setSlideshow(opening);
+    if (opening && selectedRef.current) {
+      ensureFullRes(selectedRef.current);
+    }
+  }, [ensureFullRes]);
 
   const onRegenerate = useCallback(
     (id) => {
@@ -619,7 +698,10 @@ export default function App() {
       if (!image) return;
       try {
         const buf = await readFileAsArrayBuffer(image.file);
-        const params = resolveSeed(image.id, effectiveParams(image.id));
+        const params = pinDetectionFromPreview(
+          image,
+          resolveSeed(image.id, effectiveParams(image.id)),
+        );
         const result = await processImage(buf, params);
         const name = baseName(image.name) + suffixFor(params);
         downloadBuffer(result.imageBuffer, result.imageMime, name);
@@ -640,7 +722,10 @@ export default function App() {
         const img = imgs[i];
         setExportProgress({ done: i, total: imgs.length });
         const buf = await readFileAsArrayBuffer(img.file);
-        const params = resolveSeed(img.id, effectiveParams(img.id)); // native, unscaled
+        const params = pinDetectionFromPreview(
+          img,
+          resolveSeed(img.id, effectiveParams(img.id)), // native, unscaled
+        );
         const result = await processImage(buf, params);
         const name = baseName(img.name) + suffixFor(params);
         entries.push({ name, buffer: result.imageBuffer, mime: result.imageMime });
@@ -740,7 +825,11 @@ export default function App() {
       }
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
-        moveSelection(e.key === 'ArrowRight' ? 1 : -1);
+        if (slideshowRef.current) {
+          slideshowNav(e.key === 'ArrowRight' ? 1 : -1);
+        } else {
+          moveSelection(e.key === 'ArrowRight' ? 1 : -1);
+        }
         return;
       }
       const k = e.key.toLowerCase();
@@ -753,7 +842,7 @@ export default function App() {
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo, onDeleteImage, moveSelection]);
+  }, [undo, redo, onDeleteImage, moveSelection, slideshowNav]);
 
   const selectedImage = images.find((im) => im.id === selectedId) || null;
   const selectedOverride = selectedId ? overrides[selectedId] || {} : {};
@@ -840,6 +929,27 @@ export default function App() {
         }}
       />
 
+      {restoredIds.size > 0 && !bannerHidden && (
+        <div className="flex items-center gap-2 px-2 py-1.5 bg-amber-400/10 border-b border-amber-400/30 text-[12px] text-amber-300 shrink-0">
+          <button
+            type="button"
+            title="Hide this notice"
+            onClick={() => setBannerHidden(true)}
+            className="w-6 h-6 rounded-full flex items-center justify-center text-amber-300/80 hover:text-white hover:bg-amber-400/20 shrink-0"
+          >
+            ✕
+          </button>
+          <span>↩ Restored saved settings for {restoredIds.size} frame{restoredIds.size === 1 ? '' : 's'}.</span>
+          <button
+            type="button"
+            onClick={resetAllRestored}
+            className="ml-auto px-2 h-6 text-xs rounded bg-amber-400/15 hover:bg-amber-400/25 text-amber-300"
+          >
+            Reset restored
+          </button>
+        </div>
+      )}
+
       <div className="flex-1 flex min-h-0">
         <aside className="w-72 shrink-0 border-r app-border app-surface">
           <ParamsPanel
@@ -876,7 +986,7 @@ export default function App() {
               params={selectedId ? mergeParams(globalParams, overrides[selectedId] || {}) : null}
               viewMode={viewMode}
               onViewMode={setViewMode}
-              fullRes={previewFullRes}
+              fullRes={selectedImage ? selectedImage.previewFactor === 1 : false}
               onToggleFullRes={onToggleFullRes}
               editorMode={editorMode}
               onToggleEditor={onToggleEditor}
@@ -916,6 +1026,7 @@ export default function App() {
             onDownload={() => onDownloadImage(selectedImage)}
             onRemove={() => onDeleteImage(selectedId)}
             locked={selectedId ? lockedIds.has(selectedId) : false}
+            restored={selectedId ? restoredIds.has(selectedId) : false}
             onToggleLock={() => onToggleLock(selectedId)}
             onRegenerate={() => onRegenerate(selectedId)}
             onCopySeed={() => onCopySeed(selectedId)}
@@ -940,8 +1051,8 @@ export default function App() {
           image={selectedImage}
           index={Math.max(0, images.findIndex((im) => im.id === selectedId))}
           total={images.length}
-          onPrev={() => moveSelection(-1)}
-          onNext={() => moveSelection(1)}
+          onPrev={() => slideshowNav(-1)}
+          onNext={() => slideshowNav(1)}
           onClose={onToggleSlideshow}
         />
       )}

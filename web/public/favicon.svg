@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="rebate">
+  <rect width="64" height="64" rx="14" fill="#0B0B0C"/>
+  <rect x="13" y="21" width="38" height="22" rx="6" fill="#E6C21F"/>
+  <rect x="19" y="11" width="5" height="5" rx="1.5" fill="#E6C21F"/>
+  <rect x="29.5" y="11" width="5" height="5" rx="1.5" fill="#E6C21F"/>
+  <rect x="40" y="11" width="5" height="5" rx="1.5" fill="#E6C21F"/>
+  <rect x="19" y="48" width="5" height="5" rx="1.5" fill="#E6C21F"/>
+  <rect x="29.5" y="48" width="5" height="5" rx="1.5" fill="#E6C21F"/>
+  <rect x="40" y="48" width="5" height="5" rx="1.5" fill="#E6C21F"/>
+</svg>

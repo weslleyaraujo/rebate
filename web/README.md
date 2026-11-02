@@ -80,7 +80,8 @@ Deploy `web/dist/` to any static host. `base: './'` is already set in
    bundles the results into a timestamped ZIP (or download a single frame from
    the Frame panel). If "debug" is enabled, each frame also emits a
    `.debug.jpg` with gate/crop rectangles. A **Slideshow** button (or `F`) opens
-   a full-screen viewer — navigate with `←`/`→`, close with `Esc`/`F`.
+   a full-screen, full-resolution viewer — navigate with `←`/`→`, close with
+   `Esc`/`F`.
 
 ## Params ↔ CLI
 

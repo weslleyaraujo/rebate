@@ -16,6 +16,7 @@ export default function FramePanel({
   onCopySeed,
   onApplySeedToAll,
   onOpenEditor,
+  restored,
 }) {
   if (!image) return null;
 
@@ -33,6 +34,7 @@ export default function FramePanel({
         <div className="text-[11px] app-text-muted">
           {image.status === 'done' ? 'ready' : image.status}
           {hasOverride && <span className="text-amber-400"> · overrides</span>}
+          {restored && <span className="text-amber-400"> · restored settings</span>}
           {locked && <span className="text-amber-400"> · locked</span>}
         </div>
         <div className="flex gap-1.5 mt-2">
