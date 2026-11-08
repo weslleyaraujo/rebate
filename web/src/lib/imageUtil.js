@@ -1,4 +1,4 @@
-import { zipSync } from 'fflate';
+import { zipSync, unzipSync } from 'fflate';
 
 export function readFileAsArrayBuffer(file) {
   return new Promise((resolve, reject) => {
@@ -93,4 +93,67 @@ export function zipEntries(entries) {
 export function baseName(name) {
   const i = name.lastIndexOf('.');
   return i > 0 ? name.slice(0, i) : name;
+}
+
+const IMAGE_MIME = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
+};
+
+export function isZipFile(file) {
+  const name = (file.name || '').toLowerCase();
+  const type = (file.type || '').toLowerCase();
+  return (
+    name.endsWith('.zip') ||
+    type === 'application/zip' ||
+    type === 'application/x-zip-compressed'
+  );
+}
+
+export function isImageFile(file) {
+  const name = (file.name || '').toLowerCase();
+  const type = (file.type || '').toLowerCase();
+  return (
+    /^image\/(jpeg|jpg|png|webp|tiff?)$/.test(type) ||
+    /\.(jpe?g|png|webp|tiff?)$/.test(name)
+  );
+}
+
+/**
+ * Extract supported image files from ZIP bytes. `unzipSync` returns a flat
+ * map keyed by each entry's full path, so nested directories are handled for
+ * free — we just walk every entry and keep the images, skipping directory
+ * placeholders and macOS junk.
+ */
+export function extractImagesFromZipBuffer(buf) {
+  const entries = unzipSync(new Uint8Array(buf));
+  const files = [];
+  const used = new Map(); // basename -> count, to de-collide duplicate names
+  for (const [path, data] of Object.entries(entries)) {
+    if (!data || data.length === 0) continue; // directory entry (0 bytes)
+    const parts = path.split('/');
+    if (parts.includes('__MACOSX')) continue;
+    const name = parts[parts.length - 1];
+    if (!name || name.startsWith('.')) continue; // .DS_Store etc.
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    const mime = IMAGE_MIME[ext];
+    if (!mime) continue; // not a supported image
+
+    const n = used.get(name) || 0;
+    used.set(name, n + 1);
+    const finalName =
+      n === 0 ? name : `${name.slice(0, name.length - ext.length - 1)}-${n + 1}.${ext}`;
+    files.push(new File([data], finalName, { type: mime }));
+  }
+  return files;
+}
+
+/** Read a ZIP File (e.g. a Google Takeout export) and return its image files. */
+export async function extractImagesFromZip(zipFile) {
+  const buf = await readFileAsArrayBuffer(zipFile);
+  return extractImagesFromZipBuffer(buf);
 }

@@ -23,6 +23,9 @@ import {
   downloadBuffer,
   zipEntries,
   baseName,
+  isZipFile,
+  isImageFile,
+  extractImagesFromZip,
 } from './lib/imageUtil.js';
 import { initWorker, processImage } from './lib/workerClient.js';
 
@@ -37,6 +40,25 @@ const hasFiles = (e) => {
   return !!(dt && dt.types && Array.from(dt.types).includes('Files'));
 };
 
+// Mime type -> file extension for pasted clipboard images (no real filename).
+const PASTE_EXT = {
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/tiff': 'tif',
+  'image/tif': 'tif',
+};
+
+const nameForPasted = (mime, i) => {
+  const ext = PASTE_EXT[mime] || 'png';
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  return `pasted-${stamp}${i > 0 ? `-${i + 1}` : ''}.${ext}`;
+};
+
 export default function App() {
   const [images, setImages] = useState([]);
   const [globalParams, setGlobalParams] = useState(DEFAULTS);
@@ -48,6 +70,7 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(null);
   const [dropActive, setDropActive] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [editorMode, setEditorMode] = useState(false);
   const [slideshow, setSlideshow] = useState(false);
   const [lockedIds, setLockedIds] = useState(() => new Set());
@@ -351,8 +374,28 @@ export default function App() {
   // ---- upload / manage frames ----
 
   const onFiles = useCallback(
-    (files) => {
-      const batch = files.map((file) => ({
+    async (files) => {
+      const incoming = Array.from(files || []);
+      if (!incoming.length) return;
+
+      setImporting(true);
+      try {
+        // Expand ZIP archives (nested dirs included) and keep only image files.
+        const images = [];
+        for (const f of incoming) {
+          if (isZipFile(f)) {
+            try {
+              images.push(...(await extractImagesFromZip(f)));
+            } catch (e) {
+              window.alert(`Couldn't open ${f.name}: ${e.message}`);
+            }
+          } else if (isImageFile(f)) {
+            images.push(f);
+          }
+        }
+        if (!images.length) return;
+
+        const batch = images.map((file) => ({
         id: `img-${++idCounter}-${Date.now()}`,
         name: file.name,
         file,
@@ -403,7 +446,10 @@ export default function App() {
         });
       }
 
-      for (const im of batch) runPreview(im);
+        for (const im of batch) runPreview(im);
+      } finally {
+        setImporting(false);
+      }
     },
     [runPreview],
   );
@@ -752,6 +798,41 @@ export default function App() {
     }
   }, [effectiveParams, resolveSeed]);
 
+  // ---- paste (⌘/Ctrl+V an image copied from another tab, e.g. Google Photos) ----
+
+  const onPaste = useCallback(
+    (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const files = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
+        if (!/^image\/(jpeg|jpg|png|webp|tiff?)$/i.test(item.type)) continue;
+        const f = item.getAsFile();
+        if (f) files.push(new File([f], nameForPasted(item.type, files.length), { type: item.type }));
+      }
+      if (files.length) {
+        e.preventDefault();
+        onFiles(files);
+      }
+    },
+    [onFiles],
+  );
+
+  useEffect(() => {
+    const handler = (e) => {
+      // Don't hijack paste while typing in an input/textarea/select/contenteditable.
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) {
+        return;
+      }
+      onPaste(e);
+    };
+    window.addEventListener('paste', handler);
+    return () => window.removeEventListener('paste', handler);
+  }, [onPaste]);
+
   // ---- window drag & drop (add more frames at any time) ----
 
   const onDragEnter = useCallback((e) => {
@@ -921,7 +1002,7 @@ export default function App() {
         id="upload-trigger"
         type="file"
         multiple
-        accept="image/jpeg,image/jpg,image/png,image/webp,image/tiff"
+        accept="image/jpeg,image/jpg,image/png,image/webp,image/tiff,.zip,application/zip"
         className="hidden"
         onChange={(e) => {
           onFiles(Array.from(e.target.files || []));
@@ -1042,6 +1123,16 @@ export default function App() {
             <div className="text-4xl mb-2">⬇</div>
             <div className="text-lg font-medium text-amber-300">Drop frames to add</div>
             <div className="text-xs text-neutral-400 mt-1">they'll join the current roll</div>
+          </div>
+        </div>
+      )}
+
+      {importing && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-none">
+          <div className="rounded-2xl border border-neutral-700 bg-neutral-900/90 px-10 py-8 text-center">
+            <div className="w-9 h-9 mx-auto mb-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+            <div className="text-lg font-medium text-neutral-100">Unzipping…</div>
+            <div className="text-xs text-neutral-400 mt-1">importing your frames</div>
           </div>
         </div>
       )}

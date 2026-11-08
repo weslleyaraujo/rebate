@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import { isImageFile, isZipFile } from '../lib/imageUtil.js';
 
 export default function DropZone({ onFiles, disabled }) {
   const [dragOver, setDragOver] = useState(false);
@@ -6,9 +7,7 @@ export default function DropZone({ onFiles, disabled }) {
 
   const handleFiles = useCallback(
     (list) => {
-      const files = Array.from(list || []).filter(
-        (f) => /^image\/(jpeg|jpg|png|webp|tiff)$/i.test(f.type) || /\.(jpe?g|png|webp|tiff?)$/i.test(f.name),
-      );
+      const files = Array.from(list || []).filter((f) => isImageFile(f) || isZipFile(f));
       if (files.length) onFiles(files);
     },
     [onFiles],
@@ -37,7 +36,7 @@ export default function DropZone({ onFiles, disabled }) {
         ref={inputRef}
         type="file"
         multiple
-        accept="image/jpeg,image/jpg,image/png,image/webp,image/tiff"
+        accept="image/jpeg,image/jpg,image/png,image/webp,image/tiff,.zip,application/zip"
         className="hidden"
         onChange={(e) => {
           handleFiles(e.target.files);
@@ -47,7 +46,10 @@ export default function DropZone({ onFiles, disabled }) {
       <div className="text-5xl mb-3">⬇</div>
       <div className="text-xl font-medium">Drop a roll of frames</div>
       <div className="text-sm text-neutral-500 mt-2">
-        or click to browse — .jpg / .png / .webp / .tif
+        or click to browse — .jpg / .png / .webp / .tif / .zip
+      </div>
+      <div className="text-xs text-neutral-600 mt-1">
+        You can also paste (⌘V) an image copied from another tab.
       </div>
       <div className="text-xs text-neutral-600 mt-6">
         All processing stays in your browser. Nothing is uploaded.
