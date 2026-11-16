@@ -11,9 +11,7 @@ export default function Preview({
   editorMode,
   onToggleEditor,
   gateOverride,
-  sprocketOverride,
   onGateChange,
-  onSprocketChange,
   onResetDetection,
   locked,
   onToggleSlideshow,
@@ -95,7 +93,7 @@ export default function Preview({
           {editorMode && (
             <>
               <span className="text-[10px] text-neutral-500 hidden lg:inline">
-                gate green · crop red · sprockets cyan
+                gate green · crop red
               </span>
               <button
                 type="button"
@@ -126,10 +124,8 @@ export default function Preview({
             image={image}
             params={params}
             gateOverride={gateOverride}
-            sprocketOverride={sprocketOverride}
             locked={locked}
             onGateChange={onGateChange}
-            onSprocketChange={onSprocketChange}
             onReset={onResetDetection}
           />
         ) : (

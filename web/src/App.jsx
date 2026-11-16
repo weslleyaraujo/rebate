@@ -112,6 +112,7 @@ export default function App() {
   slideshowRef.current = slideshow;
   const savedOverridesRef = useRef({}); // filename -> overrides (restored on upload)
   const savedLockedRef = useRef(new Set()); // filenames locked in a previous session
+  const savedOrderRef = useRef([]); // filenames in the last saved order
 
   useEffect(() => {
     initWorker({
@@ -139,6 +140,9 @@ export default function App() {
           Object.keys(ws.lockedByFile).filter((k) => ws.lockedByFile[k]),
         );
       }
+      if (Array.isArray(ws.order)) {
+        savedOrderRef.current = ws.order;
+      }
     } catch {
       /* ignore corrupt workspace */
     }
@@ -161,6 +165,7 @@ export default function App() {
             globalParams,
             overridesByFile,
             lockedByFile,
+            order: images.map((im) => im.name),
           }),
         );
       } catch {
@@ -407,7 +412,23 @@ export default function App() {
         status: 'processing',
         error: null,
       }));
+
+      // Restore a previously-saved order (stable sort; unknown filenames keep
+      // their upload order and are appended after known ones).
+      const savedOrder = savedOrderRef.current;
+      if (Array.isArray(savedOrder) && savedOrder.length) {
+        const idx = new Map(savedOrder.map((n, i) => [n, i]));
+        batch.sort((a, b) => {
+          const ia = idx.has(a.name) ? idx.get(a.name) : Number.MAX_SAFE_INTEGER;
+          const ib = idx.has(b.name) ? idx.get(b.name) : Number.MAX_SAFE_INTEGER;
+          return ia - ib;
+        });
+      }
       setImages((prev) => [...prev, ...batch]);
+      savedOrderRef.current = [
+        ...imagesRef.current.map((im) => im.name),
+        ...batch.map((im) => im.name),
+      ];
       setSelectedId((prev) => prev ?? batch[0].id);
       // Re-show the restored-settings notice on any new upload (a previous ✕
       // dismiss only hides it until the next upload / refresh).
@@ -462,6 +483,7 @@ export default function App() {
       if (img.debugUrl) URL.revokeObjectURL(img.debugUrl);
     }
     const next = imagesRef.current.filter((im) => im.id !== id);
+    savedOrderRef.current = next.map((im) => im.name);
     setImages(next);
     if (selectedRef.current === id) {
       setSelectedId(next[0]?.id ?? null);
@@ -471,6 +493,17 @@ export default function App() {
       delete n[id];
       return n;
     });
+  }, []);
+
+  // Drag-to-reorder in the filmstrip. Reorders the roll in place (which also
+  // drives export + slideshow order) and keeps the saved order in sync.
+  const onReorder = useCallback((from, to) => {
+    const arr = [...imagesRef.current];
+    if (from < 0 || to < 0 || from >= arr.length || to >= arr.length) return;
+    const [moved] = arr.splice(from, 1);
+    arr.splice(to, 0, moved);
+    savedOrderRef.current = arr.map((im) => im.name);
+    setImages(arr);
   }, []);
 
   const moveSelection = useCallback((dir) => {
@@ -1072,17 +1105,12 @@ export default function App() {
               editorMode={editorMode}
               onToggleEditor={onToggleEditor}
               gateOverride={selectedId ? (overrides[selectedId]?.gate_override ?? null) : null}
-              sprocketOverride={selectedId ? (overrides[selectedId]?.sprocket_override ?? null) : null}
               onGateChange={(rect) =>
                 selectedId && onDetectionOverrideChange(selectedId, 'gate_override', rect)
-              }
-              onSprocketChange={(edges) =>
-                selectedId && onDetectionOverrideChange(selectedId, 'sprocket_override', edges)
               }
               onResetDetection={() => {
                 if (!selectedId) return;
                 onDetectionOverrideChange(selectedId, 'gate_override', null);
-                onDetectionOverrideChange(selectedId, 'sprocket_override', null);
               }}
               locked={selectedId ? lockedIds.has(selectedId) : false}
               onToggleSlideshow={onToggleSlideshow}
@@ -1094,6 +1122,7 @@ export default function App() {
             selectedId={selectedId}
             onSelect={setSelectedId}
             onDelete={onDeleteImage}
+            onReorder={onReorder}
           />
         </main>
 

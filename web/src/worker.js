@@ -5,27 +5,65 @@ import corePySource from '../../rebate/core.py?raw';
 const PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.mjs';
 const HOME = '/home/pyodide';
 
-let pyodide = null;
 let readyPromise = null;
 
 function post(ok, payload, transfer = []) {
   self.postMessage({ ok, ...payload }, transfer);
 }
 
+// Reject `promise` after `ms` so a stalled CDN download can never leave the
+// worker (and the UI) waiting forever.
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
+// Load numpy + OpenCV, tolerating a slow/partial wheel download: verify the
+// modules are actually importable and, if not, re-resolve via micropip.
+async function ensureOpenCV(py) {
+  const check = () =>
+    py.runPythonAsync('import cv2, numpy').then(() => true, () => false);
+
+  try {
+    await py.loadPackage(['numpy', 'opencv-python']);
+    if (await check()) return;
+  } catch {
+    /* retry below */
+  }
+
+  // Retry: resolve the wheels directly through micropip (Pyodide's index).
+  await py.runPythonAsync(`
+import micropip
+await micropip.install(['numpy', 'opencv-python'])
+`);
+  if (!(await check())) {
+    throw new Error('OpenCV (cv2) failed to load in Pyodide');
+  }
+}
+
 async function ensurePyodide() {
-  if (pyodide) return pyodide;
   if (readyPromise) return readyPromise;
 
-  readyPromise = (async () => {
-    post(true, { type: 'status', message: 'Loading Python runtime…' });
-    const mod = await import(/* @vite-ignore */ PYODIDE_URL);
-    pyodide = await mod.loadPyodide();
+  readyPromise = withTimeout(
+    (async () => {
+      post(true, { type: 'status', message: 'Loading Python runtime…' });
+      const mod = await import(/* @vite-ignore */ PYODIDE_URL);
+      const py = await mod.loadPyodide();
 
     post(true, { type: 'status', message: 'Loading numpy + OpenCV…' });
-    await pyodide.loadPackage(['numpy', 'opencv-python']);
+    await withTimeout(
+      ensureOpenCV(py),
+      90_000,
+      'Timed out loading OpenCV — check your connection and retry',
+    );
 
-    pyodide.FS.writeFile(`${HOME}/rebate_core.py`, corePySource);
-    await pyodide.runPythonAsync(`
+    py.FS.writeFile(`${HOME}/rebate_core.py`, corePySource);
+    await py.runPythonAsync(`
 import sys, json
 sys.path.insert(0, ${JSON.stringify(HOME)})
 import rebate_core
@@ -88,8 +126,11 @@ def _do(in_id, ext, quality, params_json):
 `);
 
     post(true, { type: 'ready' });
-    return pyodide;
-  })();
+    return py;
+    })(),
+    180_000,
+    'Pyodide failed to start in time — check your connection and reload',
+  );
 
   return readyPromise;
 }

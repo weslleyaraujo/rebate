@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-// Screen-space hit radius (px) for grabbing gate edges/corners and sprocket
-// lines. Converted to full-scan px internally using the current view scale.
+// Screen-space hit radius (px) for grabbing gate edges/corners.
+// Converted to full-scan px internally using the current view scale.
 const HANDLE = 12;
 
 // Minimum gate size in full-scan px (prevents collapsing a rect while dragging).
@@ -47,10 +47,8 @@ export default function DetectionEditor({
   image,
   params,
   gateOverride,
-  sprocketOverride,
   locked,
   onGateChange,
-  onSprocketChange,
   onReset,
 }) {
   const containerRef = useRef(null);
@@ -63,7 +61,6 @@ export default function DetectionEditor({
   const landscapeRef = useRef(null);
   const viewRef = useRef({ s: 1, ox: 0, oy: 0, Lw: 0, Lh: 0 });
   const gateRef = useRef(null);
-  const sprocketRef = useRef(null);
   const dragRef = useRef(null);
   const paramsRef = useRef(params);
   paramsRef.current = params;
@@ -75,12 +72,6 @@ export default function DetectionEditor({
   const detectedGate = rects.gate
     ? rects.gate.map((v) => Math.round(v / factor))
     : null;
-  const detectedSprocket = rects.sprocket
-    ? rects.sprocket.map((v) => (v == null ? null : Math.round(v / factor)))
-    : null;
-
-  const effectiveGate = gateOverride || detectedGate;
-  const effectiveSprocket = sprocketOverride || detectedSprocket;
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -131,25 +122,6 @@ export default function DetectionEditor({
         'rgba(255,72,72,0.9)',
         1.5,
       );
-    }
-
-    // Sprocket inner edges (cyan) — draggable horizontal lines.
-    const sp = sprocketRef.current;
-    if (sp) {
-      ctx.strokeStyle = 'rgba(96,220,255,0.95)';
-      ctx.lineWidth = 2;
-      ctx.font = '11px ui-sans-serif, system-ui';
-      const labels = ['top sprockets', 'bottom sprockets'];
-      sp.forEach((y, i) => {
-        if (y == null) return;
-        const yy = oy + y * s;
-        ctx.beginPath();
-        ctx.moveTo(ox, yy);
-        ctx.lineTo(ox + Lw * s, yy);
-        ctx.stroke();
-        ctx.fillStyle = 'rgba(96,220,255,0.95)';
-        ctx.fillText(labels[i], ox + 6, Math.max(10, yy - 4));
-      });
     }
 
     // Detected/manual gate (green) — draggable + resizable.
@@ -209,17 +181,16 @@ export default function DetectionEditor({
     }
     landscapeRef.current = off;
     gateRef.current = gateOverride || detectedGate;
-    sprocketRef.current = sprocketOverride || detectedSprocket;
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [srcImg]);
 
-  // Keep refs in sync when overrides or preview meta change externally. Skipped
-  // while a drag is in progress so an unrelated re-render can't snap the draft.
+  // Keep the gate ref in sync when the override or preview meta changes.
+  // Skipped while a drag is in progress so an unrelated re-render can't snap
+  // the draft.
   useEffect(() => {
     if (dragRef.current) return;
     gateRef.current = gateOverride || detectedGate;
-    sprocketRef.current = sprocketOverride || detectedSprocket;
     draw();
   });
 
@@ -254,7 +225,6 @@ export default function DetectionEditor({
       canvas.setPointerCapture(e.pointerId);
       const { lx, ly, tol } = toLandscape(e);
       const g = gateRef.current;
-      const sp = sprocketRef.current;
 
       if (g) {
         // 1. Corner handles.
@@ -268,7 +238,7 @@ export default function DetectionEditor({
           if (Math.abs(lx - x) <= tol && Math.abs(ly - y) <= tol) {
             dragRef.current = {
               mode: 'corner', which: name,
-              startGate: [...g], startSprocket: sp ? [...sp] : null,
+              startGate: [...g],
               startLx: lx, startLy: ly,
             };
             return;
@@ -283,7 +253,7 @@ export default function DetectionEditor({
           const which = nearLeft ? 'left' : nearRight ? 'right' : nearTop ? 'top' : 'bottom';
           dragRef.current = {
             mode: 'edge', which,
-            startGate: [...g], startSprocket: sp ? [...sp] : null,
+            startGate: [...g],
             startLx: lx, startLy: ly,
           };
           return;
@@ -292,33 +262,18 @@ export default function DetectionEditor({
         if (lx > g[0] && lx < g[2] && ly > g[1] && ly < g[3]) {
           dragRef.current = {
             mode: 'move',
-            startGate: [...g], startSprocket: sp ? [...sp] : null,
+            startGate: [...g],
             startLx: lx, startLy: ly,
           };
           return;
         }
       }
 
-      // 4. Sprocket lines.
-      if (sp) {
-        for (let i = 0; i < 2; i++) {
-          if (sp[i] == null) continue;
-          if (Math.abs(ly - sp[i]) <= tol) {
-            dragRef.current = {
-              mode: 'sprocket', which: i,
-              startGate: g ? [...g] : null, startSprocket: [...sp],
-              startLx: lx, startLy: ly,
-            };
-            return;
-          }
-        }
-      }
-
-      // 5. No gate yet: drag to draw one from scratch.
+      // 4. No gate yet: drag to draw one from scratch.
       if (!g) {
         dragRef.current = {
           mode: 'create',
-          startGate: [lx, ly, lx, ly], startSprocket: sp ? [...sp] : null,
+          startGate: [lx, ly, lx, ly],
           startLx: lx, startLy: ly,
         };
       }
@@ -364,10 +319,6 @@ export default function DetectionEditor({
         gateRef.current = clampRect(
           d.startGate[0], d.startGate[1], lx, ly, v.Lw, v.Lh,
         );
-      } else if (d.mode === 'sprocket') {
-        const sp = [...d.startSprocket];
-        sp[d.which] = Math.max(0, Math.min(d.startSprocket[d.which] + dy, v.Lh));
-        sprocketRef.current = sp;
       }
 
       draw();
@@ -379,17 +330,11 @@ export default function DetectionEditor({
     const d = dragRef.current;
     if (!d) return;
     dragRef.current = null;
-    if (d.moved) {
-      if (d.mode === 'sprocket') {
-        if (sprocketRef.current) {
-          onSprocketChange(sprocketRef.current.map((v) => (v == null ? null : Math.round(v))));
-        }
-      } else if (gateRef.current) {
-        onGateChange(gateRef.current.map((v) => Math.round(v)));
-      }
+    if (d.moved && gateRef.current) {
+      onGateChange(gateRef.current.map((v) => Math.round(v)));
     }
     draw();
-  }, [draw, onGateChange, onSprocketChange]);
+  }, [draw, onGateChange]);
 
   return (
     <div
@@ -406,19 +351,11 @@ export default function DetectionEditor({
         onPointerCancel={onPointerUp}
       />
 
-      <div className="absolute top-2 left-2 px-2 py-1 rounded bg-black/70 text-[11px] text-neutral-300 backdrop-blur pointer-events-none">
-        {locked
-          ? 'Frame is locked — unlock to edit detection.'
-          : effectiveGate
-            ? 'Drag the green gate (or its handles) to fix detection.'
-            : 'Drag to draw the frame.'}
-      </div>
-
       <div className="absolute top-2 right-2 flex items-center gap-2">
         <button
           type="button"
           onClick={onReset}
-          disabled={locked || (!gateOverride && !sprocketOverride)}
+          disabled={locked || !gateOverride}
           className="px-2.5 h-7 text-xs rounded bg-black/70 text-neutral-200 hover:bg-black/90 disabled:opacity-40"
         >
           Auto

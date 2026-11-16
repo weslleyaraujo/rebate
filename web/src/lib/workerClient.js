@@ -10,6 +10,11 @@ const readyPromise = new Promise((resolve) => {
 let statusHandler = null;
 let errorHandler = null;
 
+// Upper bound on a single process request. Native-res frames normally finish
+// in a few seconds; this only fires if the worker is stuck (e.g. a stalled
+// package download), turning "Regenerating…" into a clear error.
+const PROCESS_TIMEOUT_MS = 180_000;
+
 function ensureWorker() {
   if (!worker) {
     worker = new Worker(new URL('../worker.js', import.meta.url), {
@@ -70,7 +75,16 @@ export function processImage(buffer, params) {
   const w = ensureWorker();
   const id = `req-${nextId++}`;
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      if (pending.has(id)) {
+        pending.delete(id);
+        reject(new Error('Timed out waiting for the worker — reload and retry'));
+      }
+    }, PROCESS_TIMEOUT_MS);
+    pending.set(id, {
+      resolve: (msg) => { clearTimeout(timer); resolve(msg); },
+      reject: (err) => { clearTimeout(timer); reject(err); },
+    });
     w.postMessage({ type: 'process', id, buffer, params }, [buffer]);
   });
 }

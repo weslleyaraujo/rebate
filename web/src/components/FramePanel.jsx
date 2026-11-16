@@ -23,7 +23,6 @@ export default function FramePanel({
   const hasOverride = override && Object.keys(override).length > 0;
   const effective = { ...globalParams, ...(override || {}) };
   const gateOverride = override?.gate_override || null;
-  const sprocketOverride = override?.sprocket_override || null;
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
@@ -128,8 +127,8 @@ export default function FramePanel({
 
       <Section title="Detection">
         <p className="text-[11px] app-text-muted -mt-1 mb-1 leading-snug">
-          See where auto-detection drew the frame, then drag to fix it — no pixel
-          math. The green gate is editable; sprocket lines (cyan) adjust the sliver.
+          See where auto-detection drew the frame, then drag the green gate to fix
+          it — no pixel math.
         </p>
         <button
           type="button"
@@ -138,16 +137,13 @@ export default function FramePanel({
         >
           ✥ Edit detection visually
         </button>
-        {(gateOverride || sprocketOverride) && (
+        {gateOverride && (
           <div className="flex items-center justify-between mt-1.5">
             <span className="text-[11px] text-amber-400">manual override set</span>
             <button
               type="button"
               disabled={locked}
-              onClick={() => {
-                onChange('gate_override', null);
-                onChange('sprocket_override', null);
-              }}
+              onClick={() => onChange('gate_override', null)}
               className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400 hover:text-neutral-200"
             >
               reset to auto
