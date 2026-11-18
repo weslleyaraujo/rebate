@@ -34,8 +34,8 @@ _OPTION_SPECS = [
     ("border", "--border", float, 0.025,
      "film border to include around the gate as fraction of gate height "
      "(default 0.025)"),
-    ("radius", "--radius", float, 0.015,
-     "corner radius as fraction of the final crop size (default 0.015)"),
+    ("radius", "--radius", float, 0.06,
+     "corner radius as fraction of the final crop size (default 0.06)"),
     ("radius_jitter", "--radius-jitter", float, 0.0,
      "random +/- variation of the corner radius, as a fraction (0 = fixed "
      "corners; default 0)"),
@@ -72,10 +72,10 @@ _OPTION_SPECS = [
      "set BOTH top and bottom crop offsets at once, in pixels at full scan "
      "resolution; positive reveals more, negative trims inward. A specific "
      "--offset-top/--offset-bottom wins if also given (default: unset)"),
-    ("roughness", "--roughness", float, 1.0,
-     "edge irregularity in px (0 = perfectly straight; default 1.0)"),
-    ("feather", "--feather", float, 3.0,
-     "edge softness in px (default 3.0)"),
+    ("roughness", "--roughness", float, 0.5,
+     "edge irregularity in px (0 = perfectly straight; default 0.5)"),
+    ("feather", "--feather", float, 1.5,
+     "edge softness in px (0 = hard edge; default 1.5)"),
     ("seed", "--seed", int, None,
      "random seed for edge texture (default: random)"),
     ("quality", "--quality", int, 100,

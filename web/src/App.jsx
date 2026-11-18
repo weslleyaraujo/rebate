@@ -74,7 +74,9 @@ export default function App() {
   const [editorMode, setEditorMode] = useState(false);
   const [slideshow, setSlideshow] = useState(false);
   const [lockedIds, setLockedIds] = useState(() => new Set());
+  const [lockedSnapshots, setLockedSnapshots] = useState({});
   const [restoredIds, setRestoredIds] = useState(() => new Set());
+  const [activePreset, setActivePreset] = useState(null); // { name, params } | null
   const [bannerHidden, setBannerHidden] = useState(false);
   const [theme, setTheme] = useState(() => {
     try {
@@ -104,6 +106,8 @@ export default function App() {
   const historyTimerRef = useRef(null);
   const lockedIdsRef = useRef(lockedIds);
   lockedIdsRef.current = lockedIds;
+  const lockedSnapshotsRef = useRef(lockedSnapshots);
+  lockedSnapshotsRef.current = lockedSnapshots;
   const restoredIdsRef = useRef(restoredIds);
   restoredIdsRef.current = restoredIds;
   const editorModeRef = useRef(editorMode);
@@ -112,6 +116,7 @@ export default function App() {
   slideshowRef.current = slideshow;
   const savedOverridesRef = useRef({}); // filename -> overrides (restored on upload)
   const savedLockedRef = useRef(new Set()); // filenames locked in a previous session
+  const savedLockedSnapshotsRef = useRef({}); // filename -> locked param snapshot
   const savedOrderRef = useRef([]); // filenames in the last saved order
 
   useEffect(() => {
@@ -140,6 +145,9 @@ export default function App() {
           Object.keys(ws.lockedByFile).filter((k) => ws.lockedByFile[k]),
         );
       }
+      if (ws.lockedSnapshotsByFile && typeof ws.lockedSnapshotsByFile === 'object') {
+        savedLockedSnapshotsRef.current = ws.lockedSnapshotsByFile;
+      }
       if (Array.isArray(ws.order)) {
         savedOrderRef.current = ws.order;
       }
@@ -154,9 +162,11 @@ export default function App() {
       try {
         const overridesByFile = {};
         const lockedByFile = {};
+        const lockedSnapshotsByFile = {};
         for (const im of images) {
           if (overrides[im.id]) overridesByFile[im.name] = overrides[im.id];
           if (lockedIds.has(im.id)) lockedByFile[im.name] = true;
+          if (lockedSnapshots[im.id]) lockedSnapshotsByFile[im.name] = lockedSnapshots[im.id];
         }
         localStorage.setItem(
           WORKSPACE_KEY,
@@ -165,6 +175,7 @@ export default function App() {
             globalParams,
             overridesByFile,
             lockedByFile,
+            lockedSnapshotsByFile,
             order: images.map((im) => im.name),
           }),
         );
@@ -173,7 +184,7 @@ export default function App() {
       }
     }, 500);
     return () => clearTimeout(t);
-  }, [globalParams, overrides, images, lockedIds]);
+  }, [globalParams, overrides, images, lockedIds, lockedSnapshots]);
 
   // Warn before leaving while there's unsaved work in the session.
   useEffect(() => {
@@ -205,6 +216,12 @@ export default function App() {
   }, [theme]);
 
   const effectiveParams = useCallback((id) => {
+    // A locked frame is frozen to the exact snapshot captured when it was
+    // locked (it no longer follows global param changes). Otherwise it's the
+    // roll params plus any per-frame overrides.
+    if (lockedIdsRef.current.has(id) && lockedSnapshotsRef.current[id]) {
+      return lockedSnapshotsRef.current[id];
+    }
     return mergeParams(paramsRef.current, overridesRef.current[id]);
   }, []);
 
@@ -438,6 +455,7 @@ export default function App() {
       // filename), so re-uploading the same roll keeps its tweaks.
       const restoredOverrides = {};
       const restoredLocked = [];
+      const restoredSnapshots = {};
       const restoredBatchIds = [];
       for (const im of batch) {
         if (savedOverridesRef.current[im.name]) {
@@ -445,6 +463,9 @@ export default function App() {
           restoredBatchIds.push(im.id);
         }
         if (savedLockedRef.current.has(im.name)) restoredLocked.push(im.id);
+        if (savedLockedSnapshotsRef.current[im.name]) {
+          restoredSnapshots[im.id] = savedLockedSnapshotsRef.current[im.name];
+        }
       }
       if (Object.keys(restoredOverrides).length) {
         // Update the ref synchronously so the immediate runPreview below sees
@@ -465,6 +486,9 @@ export default function App() {
           for (const id of restoredLocked) n.add(id);
           return n;
         });
+      }
+      if (Object.keys(restoredSnapshots).length) {
+        setLockedSnapshots((prev) => ({ ...prev, ...restoredSnapshots }));
       }
 
         for (const im of batch) runPreview(im);
@@ -578,6 +602,11 @@ export default function App() {
         n.delete(imageId);
         return n;
       });
+      setLockedSnapshots((prev) => {
+        const n = { ...prev };
+        delete n[imageId];
+        return n;
+      });
       setRestoredIds((prev) => {
         const n = new Set(prev);
         n.delete(imageId);
@@ -602,14 +631,21 @@ export default function App() {
       for (const id of ids) n.delete(id);
       return n;
     });
+    setLockedSnapshots((prev) => {
+      const n = { ...prev };
+      for (const id of ids) delete n[id];
+      return n;
+    });
     setRestoredIds(new Set());
     scheduleHistoryCommit();
     for (const id of ids) debouncedRePreview(id);
   }, [scheduleHistoryCommit, debouncedRePreview]);
 
   const applyPreset = useCallback(
-    (params) => {
-      setGlobalParams({ ...DEFAULTS, ...params });
+    (params, name) => {
+      const next = { ...DEFAULTS, ...params };
+      setGlobalParams(next);
+      if (name) setActivePreset({ name, params: next });
       scheduleHistoryCommit();
       rePreviewAll();
     },
@@ -621,22 +657,33 @@ export default function App() {
   const onToggleLock = useCallback(
     (id) => {
       if (lockedIdsRef.current.has(id)) {
+        // Unlock: drop the frozen snapshot so the frame follows the roll
+        // params again (while keeping its per-frame overrides), then
+        // regenerate. This is what makes a canvas-size (or any global) change
+        // made while locked take effect as soon as the frame is unlocked.
+        setLockedSnapshots((prev) => {
+          const n = { ...prev };
+          delete n[id];
+          return n;
+        });
         setLockedIds((prev) => {
           const n = new Set(prev);
           n.delete(id);
           return n;
         });
+        scheduleHistoryCommit();
+        debouncedRePreview(id);
       } else {
-        // Freeze this frame's look: capture its current effective params
-        // (including seed) into its override so BOTH preview and export are
-        // stable and no longer follow global param changes.
+        // Freeze this frame's look: snapshot its current effective params
+        // (including the pinned seed) separately from the per-frame override,
+        // so preview + export stay stable and no longer follow global changes.
         const snap = effectiveParams(id);
-        setOverrides((prev) => ({ ...prev, [id]: snap }));
+        setLockedSnapshots((prev) => ({ ...prev, [id]: snap }));
         setLockedIds((prev) => new Set(prev).add(id));
         scheduleHistoryCommit();
       }
     },
-    [effectiveParams, scheduleHistoryCommit],
+    [effectiveParams, scheduleHistoryCommit, debouncedRePreview],
   );
 
   const onToggleFullRes = useCallback(() => {
@@ -734,11 +781,13 @@ export default function App() {
   );
 
   const savePreset = useCallback((name) => {
+    const current = { ...paramsRef.current };
     setUserPresets((prev) => {
-      const next = { ...prev, [name]: serializePreset(paramsRef.current) };
+      const next = { ...prev, [name]: serializePreset(current) };
       saveUserPresets(next);
       return next;
     });
+    setActivePreset({ name, params: current });
   }, []);
 
   const deletePreset = useCallback((name) => {
@@ -748,6 +797,7 @@ export default function App() {
       saveUserPresets(next);
       return next;
     });
+    setActivePreset((prev) => (prev && prev.name === name ? null : prev));
   }, []);
 
   const exportPresets = useCallback(() => {
@@ -961,6 +1011,15 @@ export default function App() {
   const selectedImage = images.find((im) => im.id === selectedId) || null;
   const selectedOverride = selectedId ? overrides[selectedId] || {} : {};
   const selectedFrameLocked = selectedId ? lockedIds.has(selectedId) : false;
+  const selectedEffective = selectedId
+    ? selectedFrameLocked && lockedSnapshots[selectedId]
+      ? lockedSnapshots[selectedId]
+      : mergeParams(globalParams, selectedOverride)
+    : null;
+  const activePresetName = activePreset?.name ?? null;
+  const presetDirty = activePreset
+    ? JSON.stringify(globalParams) !== JSON.stringify(activePreset.params)
+    : false;
   const paramsDisabled = images.length === 0 || selectedFrameLocked;
   const paramsDisabledReason = images.length === 0
     ? 'Add frames to start editing.'
@@ -1077,6 +1136,9 @@ export default function App() {
             onDeletePreset={deletePreset}
             onImportPresets={importPresets}
             onExportPresets={exportPresets}
+            activePresetName={activePresetName}
+            presetDirty={presetDirty}
+            onUpdatePreset={savePreset}
           />
         </aside>
 
@@ -1097,7 +1159,7 @@ export default function App() {
           ) : (
             <Preview
               image={selectedImage}
-              params={selectedId ? mergeParams(globalParams, overrides[selectedId] || {}) : null}
+              params={selectedEffective}
               viewMode={viewMode}
               onViewMode={setViewMode}
               fullRes={selectedImage ? selectedImage.previewFactor === 1 : false}
@@ -1129,7 +1191,7 @@ export default function App() {
         <aside className="w-64 shrink-0 border-l app-border app-surface">
           <FramePanel
             image={selectedImage}
-            globalParams={globalParams}
+            effective={selectedEffective}
             override={selectedOverride}
             onChange={(key, value) => onOverrideChange(selectedId, key, value)}
             onReset={() => onResetOverride(selectedId)}

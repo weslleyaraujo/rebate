@@ -97,3 +97,40 @@ test('add more frames, remove one, and undo param changes', async ({ page }) => 
 
   expect(errors).toEqual([]);
 });
+
+test('locked frame regenerates with new canvas size after unlock', async ({ page }) => {
+  const errors = collectErrors(page);
+  await waitReady(page);
+
+  await page.setInputFiles('#upload-trigger', SAMPLE);
+  await expect(page.locator('[data-testid="frame-thumb"]')).toHaveCount(1, {
+    timeout: 60_000,
+  });
+  await expect(
+    page.locator('[data-testid="frame-thumb"] .animate-spin'),
+  ).toHaveCount(0, { timeout: 60_000 });
+
+  // Lock the frame so it freezes its current look.
+  await page.getByRole('button', { name: /Lock/ }).click();
+  await expect(page.getByRole('button', { name: /Locked/ })).toBeVisible();
+
+  // Change the (global) canvas size while the frame is locked. The locked
+  // frame must NOT regenerate yet.
+  const canvasInput = page.getByText('Canvas size (px)').locator('xpath=..').locator('input');
+  await canvasInput.fill('2000');
+  await expect(
+    page.locator('[data-testid="frame-thumb"] .animate-spin'),
+  ).toHaveCount(0, { timeout: 5_000 });
+
+  // Unlock: the frame should now regenerate with the new canvas size.
+  await page.getByRole('button', { name: /Locked/ }).click();
+  await expect(page.getByRole('button', { name: /Lock/ })).toBeVisible();
+  await expect(
+    page.locator('[data-testid="frame-thumb"] .animate-spin'),
+  ).toHaveCount(1, { timeout: 10_000 });
+  await expect(
+    page.locator('[data-testid="frame-thumb"] .animate-spin'),
+  ).toHaveCount(0, { timeout: 60_000 });
+
+  expect(errors).toEqual([]);
+});

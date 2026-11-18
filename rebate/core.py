@@ -606,13 +606,14 @@ def _rounded_mask(w, h, radius, inset=0, square_corners=None):
 
 
 def _organic_mask(w, h, radius, roughness, feather, seed, square_corners=None):
-    """Rounded-rect mask with slightly irregular, soft, anti-aliased edges.
+    """Rounded-rect mask with a slightly irregular, anti-aliased edge.
 
     The rounded rect is computed as an analytic signed-distance field (instead
-    of a rasterized circle), perturbed by low-frequency fractal noise for an
-    organic hand-cut edge (roughness, px), and converted to a soft alpha with a
-    `feather`-px falloff. This keeps corners smooth rather than a 1-pixel
-    staircase.
+    of a rasterized circle), perturbed by high-frequency fractal noise for a
+    subtle, straight film-gate edge (roughness, px), and converted to a soft
+    alpha with a `feather`-px falloff. The noise is deliberately fine-grained
+    so the edge reads like a machined film gate (a Fuji Frontier scan) rather
+    than a hand-cut wavy edge.
 
     The noise is generated on a FIXED reference grid (not on the mask's own
     resolution) so the same seed produces the same normalized edge texture at
@@ -671,28 +672,34 @@ def _organic_mask(w, h, radius, roughness, feather, seed, square_corners=None):
             sdf = np.minimum(sdf, patch)
 
     if roughness > 0:
-        # Fractal low-frequency noise on a FIXED reference grid, then upscaled.
-        # The fixed grid keeps the RNG stream (and the resulting pattern)
-        # identical regardless of the mask resolution.
+        # High-frequency fractal noise on a FIXED reference grid, then upscaled.
+        # The octaves are deliberately fine (a few px at native resolution) so
+        # the edge reads as a straight, machined film gate with subtle grain —
+        # like a Fuji Frontier scan — rather than large-scale waviness. The
+        # fixed reference grid keeps the RNG stream (and the pattern) identical
+        # at any output size.
         ref = 2048
         total = np.zeros((h, w), np.float32)
-        amp, scale = 1.0, 20
-        for _ in range(3):
+        amp, scale = 1.0, 1
+        for _ in range(4):
             nw = max(2, ref // scale)
             nh = max(2, ref // scale)
             n = rng.standard_normal((nh, nw)).astype(np.float32)
             n = cv2.resize(n, (w, h), interpolation=cv2.INTER_LINEAR)
             total += amp * n
             amp *= 0.5
-            scale *= 2
-        total = cv2.GaussianBlur(total, (0, 0), 1.0)
+            scale *= 2  # 1, 2, 4, 8 px
+        total = cv2.GaussianBlur(total, (0, 0), 0.8)
         if float(total.std()) > 1e-6:
             total = (total - total.mean()) / total.std()
         total = np.clip(total, -2.0, 2.0)
         sdf = sdf + roughness * total
 
-    # Soft alpha falloff; `feather` is the edge width in pixels.
-    alpha = np.clip(0.5 - sdf / max(float(feather), 1e-3), 0.0, 1.0)
+    # Soft alpha falloff; `feather` is the edge width in pixels. A smoothstep
+    # keeps the centre of the transition crisp (like a real film gate) while
+    # retaining anti-aliasing at the tails.
+    t = np.clip(0.5 - sdf / max(float(feather), 1e-3), 0.0, 1.0)
+    alpha = t * t * (3.0 - 2.0 * t)
     mask = (alpha * 255.0 + 0.5).astype(np.uint8)
     return mask
 

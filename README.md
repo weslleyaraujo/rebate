@@ -31,7 +31,7 @@ Left column: the default bordered look — the three images use identical
 settings, only a different random seed. Right column, top to bottom: sprocket
 slivers forced (`--sprocket-chance 1`), no rounding/no texture
 (`--radius 0 --roughness 0 --feather 0`), and very rounded corners
-(`--radius 0.06 --radius-jitter 0`).
+(`--radius 0.10 --radius-jitter 0`).
 
 ## Run
 
@@ -110,12 +110,12 @@ minimal "combination" and keeps working even if a default changes later.
 | `--size`      | `0`             | square canvas size; `0` = native resolution (recommended)|
 | `--margin`    | `0.05`          | white margin around the crop (fraction)                  |
 | `--border`    | `0.025`         | film border kept around the gate (fraction of gate height)|
-| `--radius`    | `0.015`         | corner radius (fraction of final crop size)              |
+| `--radius`    | `0.06`         | corner radius (fraction of final crop size)              |
 | `--radius-jitter` | `0`          | random +/- variation of corner radius (fraction; 0 = fixed corners) |
 | `--square-corner-chance` | `0.2` | chance (0-1) that one corner, or two corners on the same side, are squared off instead of rounded |
 | `--border-jitter` | `0.6`        | random shift of the black film border, as a fraction of the border thickness (0 = perfectly even). Forced to `0` automatically when any `--offset-*` is used |
-| `--roughness` | `1.0`           | edge irregularity in px (0 = perfectly straight)         |
-| `--feather`   | `3.0`           | edge softness in px (0 = hard edge)                      |
+| `--roughness` | `0.5`           | edge irregularity in px (0 = perfectly straight)         |
+| `--feather`   | `1.5`           | edge softness in px (0 = hard edge)                      |
 | `--sprocket-chance` | `0.7`      | chance (0-1) a tiny sliver of sprockets is visible, on at most one side (top or bottom) |
 | `--max-sprocket-border` | `0.03` | max rebate (fraction of gate height) that still shows a sprocket sliver; beyond it the crop keeps a small plain border |
 | `--offset-left` / `--offset-right` / `--offset-top` / `--offset-bottom` | `0` | manual nudge of one crop edge, in pixels at full scan resolution; positive reveals more of that side, negative trims it inward. Deterministic and applied to the final crop, so each flag only ever moves its own edge. Use when the detector occasionally cuts a sliver off one edge |
@@ -186,7 +186,7 @@ positive (slide) film.
    with `--sprocket-chance`, occasionally dips a tiny sliver of sprocket
    holes on at most one randomly-chosen side — only when that side's rebate
    is thin enough that the border stays small; see `--max-sprocket-border`).
-6. Applies a rounded, slightly wavy, feathered edge and pastes onto a white
+6. Applies a rounded, subtly irregular, feathered edge and pastes onto a white
    canvas at native resolution.
 
 Requires: `opencv-python-headless` and `numpy`.

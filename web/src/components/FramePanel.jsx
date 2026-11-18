@@ -4,7 +4,7 @@ import VisualParams from './VisualParams.jsx';
 
 export default function FramePanel({
   image,
-  globalParams,
+  effective,
   override,
   onChange,
   onReset,
@@ -21,7 +21,6 @@ export default function FramePanel({
   if (!image) return null;
 
   const hasOverride = override && Object.keys(override).length > 0;
-  const effective = { ...globalParams, ...(override || {}) };
   const gateOverride = override?.gate_override || null;
 
   return (
@@ -113,7 +112,7 @@ export default function FramePanel({
           <NumberControl
             key={def.key}
             label={def.label}
-            value={override?.[def.key] ?? globalParams[def.key]}
+            value={effective?.[def.key] ?? 0}
             min={def.min}
             max={def.max}
             step={def.step}

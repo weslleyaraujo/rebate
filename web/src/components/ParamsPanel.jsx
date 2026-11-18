@@ -14,6 +14,9 @@ export default function ParamsPanel({
   onDeletePreset,
   onImportPresets,
   onExportPresets,
+  activePresetName,
+  presetDirty,
+  onUpdatePreset,
 }) {
   const [saveName, setSaveName] = useState('');
 
@@ -40,7 +43,7 @@ export default function ParamsPanel({
                 key={p.name}
                 type="button"
                 title={p.description || p.name}
-                onClick={() => onApplyPreset(p.params)}
+                onClick={() => onApplyPreset(p.params, p.name)}
                 className="px-2.5 h-7 text-xs rounded-full bg-neutral-800 hover:bg-neutral-700 text-neutral-100"
               >
                 {p.name}
@@ -59,7 +62,7 @@ export default function ParamsPanel({
                     key={name}
                     type="button"
                     title={name}
-                    onClick={() => onApplyPreset(p)}
+                    onClick={() => onApplyPreset(p, name)}
                     className="px-2.5 h-7 text-xs rounded-full bg-amber-400/10 hover:bg-amber-400/20 text-amber-600 flex items-center gap-1"
                   >
                     {name}
@@ -77,6 +80,25 @@ export default function ParamsPanel({
                 ))}
               </div>
             </>
+          )}
+
+          {activePresetName && (
+            <div className="flex items-center gap-2 mt-2 text-[11px]">
+              <span className="app-text-muted truncate" title={activePresetName}>
+                {presetDirty
+                  ? `Changed from “${activePresetName}”`
+                  : `Using “${activePresetName}”`}
+              </span>
+              {presetDirty && (
+                <button
+                  type="button"
+                  onClick={() => onUpdatePreset(activePresetName)}
+                  className="ml-auto px-2 h-6 text-xs rounded bg-amber-400/15 hover:bg-amber-400/25 text-amber-300 shrink-0"
+                >
+                  Save changes
+                </button>
+              )}
+            </div>
           )}
 
           <div className="flex gap-1.5 mt-2">
