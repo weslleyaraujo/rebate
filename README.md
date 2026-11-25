@@ -48,6 +48,15 @@ Single file:
 ./rebate.py SAMPLE.jpg --out ./out --debug
 ```
 
+Tile several frames onto one canvas (two-up diptych, vertical stack, or
+contact-sheet grid):
+
+```bash
+./rebate.py a.jpg b.jpg --merge --size 3000                # vertical stack (default)
+./rebate.py a.jpg b.jpg --merge --layout horizontal --size 1600
+./rebate.py *.jpg --merge --layout grid:2x2 --size 3000 --gap 0.04
+```
+
 Or explicitly:
 
 ```bash
@@ -118,6 +127,9 @@ minimal "combination" and keeps working even if a default changes later.
 | `--feather`   | `1.5`           | edge softness in px (0 = hard edge)                      |
 | `--sprocket-chance` | `0.7`      | chance (0-1) a tiny sliver of sprockets is visible, on at most one side (top or bottom) |
 | `--max-sprocket-border` | `0.03` | max rebate (fraction of gate height) that still shows a sprocket sliver; beyond it the crop keeps a small plain border |
+| `--merge`    | off             | tile all input images onto a single canvas instead of processing each individually (needs 2+ inputs) |
+| `--layout`   | `vertical`      | merge layout: `vertical`, `horizontal`, `grid` (2 columns), or `grid:ROWSxCOLS` |
+| `--gap`      | `0.03`          | spacing between merged tiles, as a fraction of the common tile size |
 | `--offset-left` / `--offset-right` / `--offset-top` / `--offset-bottom` | `0` | manual nudge of one crop edge, in pixels at full scan resolution; positive reveals more of that side, negative trims it inward. Deterministic and applied to the final crop, so each flag only ever moves its own edge. Use when the detector occasionally cuts a sliver off one edge |
 | `--offset-x` / `--offset-y` | unset | shorthand: set **both** left+right (`--offset-x`) or **both** top+bottom (`--offset-y`) at once. A specific edge flag wins if also given. Passing any `--offset-*` with a non-zero `--border-jitter` is an error (the script exits); otherwise `--border-jitter` is forced to `0` |
 | `--seed`      | random          | random seed for edge texture (for reproducibility)       |
@@ -141,6 +153,30 @@ just the random number that picks those details.
 point of the random generator, so a given number always replays the same
 random details. Pass `--seed N` to lock a look you like; leave it out and
 every run is a fresh roll of the dice.
+
+## Merge (diptychs & grids)
+
+Tile several frames onto one white canvas — a horizontal two-up for feeds, a
+vertical stack for stories, or a contact-sheet grid. Each tile still goes
+through the full per-image pipeline (its own sprocket sliver, border jitter,
+organic edge and corner variation), so the tiles read as independent scans.
+
+```bash
+./rebate.py a.jpg b.jpg --merge --size 3000                # vertical stack (default)
+./rebate.py a.jpg b.jpg --merge --layout horizontal --size 1600
+./rebate.py 1.jpg 2.jpg 3.jpg --merge --layout grid:2x2 --gap 0.04
+```
+
+- `--layout vertical` (default) tiles top-to-bottom at a common width.
+- `--layout horizontal` tiles left-to-right at a common height.
+- `--layout grid` uses two columns; `--layout grid:ROWSxCOLS` sets an exact grid
+  (each tile is contain-fitted and centred in its cell).
+- `--gap` is the spacing *between* tiles; `--margin` is the outer white margin.
+- `--size N` puts the collage on the same `N x N` square canvas as a single
+  image (the collage is scaled to fit inside and centred). `--size 0` uses a
+  native canvas the size of a single frame, so a merged export is the same size
+  as a regular image and is never upscaled.
+- `--merge` cannot be combined with `--plain` or `--offset-*`.
 
 ## Plain crop (no border)
 
@@ -194,10 +230,11 @@ Requires: `opencv-python-headless` and `numpy`.
 ## Code structure
 
 - `rebate/core.py` — pure, in-memory image processing (detection, crop, compose,
-  `process_image`, `decode_image`/`encode_image`). No file IO / argparse, so it
-  runs in both the CLI and the browser (Pyodide).
+  `process_image`, `compose_merge_on_white`/`process_merge`, `decode_image`/
+  `encode_image`). No file IO / argparse, so it runs in both the CLI and the
+  browser (Pyodide).
 - `rebate/cli.py` — the CLI client: argparse, named configs, offset shorthand,
-  file IO. Delegates to `core.process_image`.
+  file IO. Delegates to `core.process_image` / `core.process_merge`.
 - `rebate/__init__.py` — re-exports both modules so `import rebate` stays
   compatible with the original single-file script.
 - `rebate.py` — executable launcher (`rebate.cli.main`).

@@ -104,3 +104,46 @@ body {
 input[type="range"] {
   accent-color: #f59e0b;
 }
+
+/* Drop hints shown while dragging a frame in the filmstrip. These are toggled
+   via direct DOM classList manipulation (not React state) so a hint appearing
+   never re-renders the tree and cancels the in-flight HTML5 drag/drop. */
+.drop-hint-before::after,
+.drop-hint-after::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #f59e0b;
+  z-index: 30;
+  pointer-events: none;
+}
+.drop-hint-before::after {
+  left: 0;
+}
+.drop-hint-after::after {
+  right: 0;
+}
+.drop-hint-merge {
+  outline: 2px solid #f59e0b;
+  outline-offset: -2px;
+}
+.drop-hint-merge::before {
+  content: "merge";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 14px;
+  background: rgba(245, 158, 11, 0.88);
+  color: #000;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+  pointer-events: none;
+}

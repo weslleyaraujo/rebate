@@ -21,7 +21,11 @@ describe('DEFAULTS', () => {
       max_sprocket_border: 0.03,
       roughness: 0.5,
       feather: 1.5,
+      waviness: 0,
+      edge_asymmetry: 0,
       sprocket_chance: 0.7,
+      layout: 'vertical',
+      gap: 0.03,
       offset_left: 0,
       offset_right: 0,
       offset_top: 0,
@@ -47,12 +51,13 @@ describe('mergeParams', () => {
 describe('scaleParamsForPreview', () => {
   it('scales pixel-sized params and leaves fractions untouched', () => {
     const out = scaleParamsForPreview(
-      { ...DEFAULTS, offset_left: 40, roughness: 2, feather: 6, border: 0.025 },
+      { ...DEFAULTS, offset_left: 40, roughness: 2, feather: 6, waviness: 4, border: 0.025 },
       0.5,
     );
     expect(out.offset_left).toBe(20);
     expect(out.roughness).toBe(1);
     expect(out.feather).toBe(3);
+    expect(out.waviness).toBe(2);
     expect(out.border).toBe(0.025); // fraction, scale-free
     expect(out.margin).toBe(0.05);
   });

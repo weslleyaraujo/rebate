@@ -30,10 +30,12 @@ Default output is **native resolution** (no resampling), typically ~6300×4500px
 ./rebate.py INPUT.jpg --out ./out
 ./rebate.py INPUT.jpg --out ./out --debug          # also save annotated debug image
 ./rebate.py INPUT.jpg --out ./out --plain --suffix .plain.jpg   # no border, no canvas
+./rebate.py a.jpg b.jpg --merge --size 3000        # tile several frames onto one canvas
 /opt/homebrew/bin/python3.11 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Single file, glob, or many inputs all work (`inputs` is `nargs="+"`).
+Single file, glob, or many inputs all work (`inputs` is `nargs="+"`). With
+`--merge`, the inputs become tiles on one canvas (see **Merge** below).
 
 ## Input data layout
 
@@ -70,6 +72,9 @@ Most full-strip scans are ~5700×4900px; the slide roll is ~5600×3750px.
 | `--roughness` | `1.0` | edge irregularity in px |
 | `--feather` | `3.0` | edge softness in px |
 | `--sprocket-chance` | `0.7` | chance a tiny sprocket sliver shows, at most one side |
+| `--merge` | off | tile all inputs onto one canvas (needs 2+ inputs) |
+| `--layout` | `vertical` | merge layout: `vertical`, `horizontal`, `grid` (2 cols), or `grid:ROWSxCOLS` |
+| `--gap` | `0.03` | spacing between merged tiles (fraction of the common tile size) |
 | `--seed` | random | seed for edge texture / sprocket / border randomness |
 | `--quality` | `100` | JPEG quality |
 | `--plain` | off | crop just the 3:2 image, no border/canvas |
@@ -82,9 +87,10 @@ The single-file script was split so the pure image-processing core can run both
 as a CLI and in the browser (Pyodide/WASM):
 
 - `rebate/core.py` — pure, in-memory pipeline (detection, crop, compose,
-  `process_image`, `decode_image`/`encode_image`); imports only `cv2` + `numpy`.
+  `process_image`, merge (`compose_merge_on_white`/`process_merge`),
+  `decode_image`/`encode_image`); imports only `cv2` + `numpy`.
 - `rebate/cli.py` — CLI client (argparse, configs, offset shorthand, file IO);
-  delegates to `core.process_image`.
+  delegates to `core.process_image` / `core.process_merge`.
 - `rebate/__init__.py` — re-exports everything so `import rebate` is unchanged.
 - `rebate.py` — executable launcher.
 - `web/` — React/Vite/Tailwind browser client (Pyodide Web Worker).
@@ -117,6 +123,12 @@ Crop / compose:
   corners squared off.
 - `compose_on_white` — paste crop onto white canvas (native or `--size`);
   decides which (if any) corners get squared via `--square-corner-chance`.
+- `_masked_tile` — shared per-tile resize + organic-mask step used by both
+  `compose_on_white` and merge.
+- `_parse_layout` / `compose_merge_on_white` / `process_merge` — multi-image
+  merge: normalize tiles to a common size, mask each with its own per-tile
+  seed (`MERGE_SEED_STRIDE` apart), and tile them onto one canvas
+  (horizontal/vertical/grid). `--size` means "longest side" in merge mode.
 - `process` — reads image, handles portrait rotation, runs detect→crop→compose.
 - `main` — argparse.
 
@@ -147,6 +159,26 @@ Physical constants: `ASPECT = 1.5`, `GATE_H_MM = 24.0`,
 Why: these full-strip scans have a thick top rebate (~350–600px on some rolls),
 so dipping all the way to the far sprockets made the border huge. The user
 wanted "a small part of the rebate + a tiny little bit of sprocket".
+
+## Merge (multi-image) — behavior
+
+- `--merge` reuses the whole per-image pipeline (detect → crop-with-border) for
+  every input, then tiles the finished crops onto **one** canvas.
+- Each tile keeps its own sprocket sliver / border jitter / organic edge via a
+  per-tile seed: `seed + i * MERGE_SEED_STRIDE` (stride 500000, chosen so the
+  crop `+100000` and corner `+200000` streams never collide across tiles).
+- Normalization: horizontal shares a common tile height, vertical a common
+  width, grid uses uniform cells (contain-fit, centred).
+- `--size` in merge mode = a **square canvas** (same as a single image): the
+  collage is scaled to fit inside and centred. `--size 0` (native) uses a
+  single frame's native crop+margin canvas (the web client instead passes an
+  explicit `canvas_size` = the average width/height of all uploaded frames) and
+  never upscales. Default layout is `vertical`.
+- `--merge` rejects `--plain` and `--offset-*`; `--debug` has no effect.
+- Core exposes `compose_merge_on_white(crops, ...)` (pure) and
+  `process_merge(images, ...)` (detect→crop→tile); the CLI client is
+  `process_merge_files(paths, ...)` (named differently so it never shadows the
+  core's `process_merge` in `import rebate`).
 
 ## Key decisions / gotchas (from project history)
 
@@ -179,8 +211,8 @@ wanted "a small part of the rebate + a tiny little bit of sprocket".
 - The browser client runs the *same* `rebate/core.py` in **Pyodide 314.x**, which
   ships `opencv-python 4.11`, `numpy`, `scipy`, `Pillow` as built-in packages.
 - Pyodide runs in a Web Worker; the main thread posts image bytes, the worker
-  decodes → `process_image` → encodes → posts bytes back. Images never leave
-  the page.
+  decodes → `process_image` (single) or `process_merge` (merge) → encodes →
+  posts bytes back. Images never leave the page.
 - **Pixel parity**: native CLI (cv2 5.0.0) and WASM (cv2 4.11.0) produce
   identical geometry (gate/crop rects) and near-identical pixels — exact on the
   synthetic/grayscale scans, within ~1 LSB on real color scans due to cv2 SIMD
@@ -193,6 +225,14 @@ wanted "a small part of the rebate + a tiny little bit of sprocket".
   schema (`web/src/lib/params.js`); do not rely on `process_image` function
   defaults, which intentionally differ from CLI defaults for `border_jitter`
   (0.0 vs 0.6) and `square_corner_chance` (0.0 vs 0.2).
+- **Web merge**: the web client wires merge too (`processMerge` in the worker
+  + `MergeBar` + `GroupPreview` + `Filmstrip` drag-drop). The user drags one
+  frame onto another to form a **merge group** (any number of groups per roll);
+  each group is an entry in the filmstrip and opens into a sub-strip where each
+  frame can be tweaked individually (per-image params flow through
+  `process_merge(..., per_image=[...])`). Layout default is `vertical`. Merge
+  canvas = a single image's canvas (average uploaded dims at native, else the
+  square size).
 - **WASM gotcha**: numpy integer reductions use 32-bit accumulators on wasm32 —
   `int(arr.sum())` on a >~16 MP uint8 array overflows. The core avoids full-array
   integer sums; use float means/chunked sums in any diagnostics.
@@ -200,10 +240,10 @@ wanted "a small part of the rebate + a tiny little bit of sprocket".
 ## Tests
 
 ```bash
-# Python: core + CLI client + integration (49 tests)
+# Python: core + CLI client + integration + merge (70 tests)
 /opt/homebrew/bin/python3.11 -m unittest discover -s tests -p 'test_*.py'
 
-# Browser client (Vitest, 18 tests)
+# Browser client (Vitest, 30 tests)
 cd web && npm test
 ```
 
@@ -214,6 +254,8 @@ cd web && npm test
 - `tests/test_rebate.py` — integration through the `import rebate` surface:
   masks, grid fitting, gate/photo detection, portrait rotation, compose,
   randomness, offsets, and config presets.
+- `tests/test_merge.py` — multi-image merge (compose_merge_on_white layout,
+  per-tile seeds, process_merge, CLI `--merge` guards).
 - `web/src/lib/*.test.js` — browser-client logic (param schema/defaults,
   preview scaling, presets, ZIP).
 

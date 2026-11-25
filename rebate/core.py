@@ -24,6 +24,11 @@ GATE_H_MM = 24.0
 SPROCKET_PITCH_MM = 4.75
 # Fallback sprocket pitch in pixels (only used by _grid_aligned).
 SPROCKET_PITCH_FALLBACK = 730
+# Per-image RNG stream stride for multi-image merges. Each tile reserves a
+# block this wide so its crop / mask / corner streams never collide with
+# another tile's streams (the single-image pipeline uses fixed offsets of
+# 100000 and 200000 within the base seed).
+MERGE_SEED_STRIDE = 500000
 
 
 # ---------------------------------------------------------------------------
@@ -605,15 +610,18 @@ def _rounded_mask(w, h, radius, inset=0, square_corners=None):
     return mask
 
 
-def _organic_mask(w, h, radius, roughness, feather, seed, square_corners=None):
+def _organic_mask(w, h, radius, roughness, feather, seed, square_corners=None,
+                  waviness=0.0, edge_asymmetry=0.0):
     """Rounded-rect mask with a slightly irregular, anti-aliased edge.
 
     The rounded rect is computed as an analytic signed-distance field (instead
     of a rasterized circle), perturbed by high-frequency fractal noise for a
-    subtle, straight film-gate edge (roughness, px), and converted to a soft
-    alpha with a `feather`-px falloff. The noise is deliberately fine-grained
-    so the edge reads like a machined film gate (a Fuji Frontier scan) rather
-    than a hand-cut wavy edge.
+    subtle, straight film-gate edge (roughness, px), plus a low-frequency
+    undulation (`waviness`, px) for the slow bow/drift of a real film gate,
+    and converted to a soft alpha with a `feather`-px falloff. `edge_asymmetry`
+    (0-1) lets each of the four edges have its own roughness/waviness amplitude
+    so the mask reads as an actual, slightly uneven lab mask rather than a
+    symmetric machined frame.
 
     The noise is generated on a FIXED reference grid (not on the mask's own
     resolution) so the same seed produces the same normalized edge texture at
@@ -621,10 +629,10 @@ def _organic_mask(w, h, radius, roughness, feather, seed, square_corners=None):
     look identical.
     """
     square = set(square_corners or ())
-    inset = int(round(2.0 * roughness + feather)) + 2
+    inset = int(round(2.0 * (roughness + waviness) + feather)) + 2
 
-    # Hard, binary mask when both effects are disabled (sharp look).
-    if roughness <= 0 and feather <= 0:
+    # Hard, binary mask when all edge effects are disabled (sharp look).
+    if roughness <= 0 and waviness <= 0 and feather <= 0:
         return _rounded_mask(w, h, radius, inset, square)
 
     rng = np.random.default_rng(seed)
@@ -671,29 +679,69 @@ def _organic_mask(w, h, radius, roughness, feather, seed, square_corners=None):
             )
             sdf = np.minimum(sdf, patch)
 
-    if roughness > 0:
+    if roughness > 0 or waviness > 0:
+        perturb = np.zeros((h, w), np.float32)
+
         # High-frequency fractal noise on a FIXED reference grid, then upscaled.
-        # The octaves are deliberately fine (a few px at native resolution) so
-        # the edge reads as a straight, machined film gate with subtle grain —
-        # like a Fuji Frontier scan — rather than large-scale waviness. The
-        # fixed reference grid keeps the RNG stream (and the pattern) identical
-        # at any output size.
-        ref = 2048
-        total = np.zeros((h, w), np.float32)
-        amp, scale = 1.0, 1
-        for _ in range(4):
-            nw = max(2, ref // scale)
-            nh = max(2, ref // scale)
-            n = rng.standard_normal((nh, nw)).astype(np.float32)
-            n = cv2.resize(n, (w, h), interpolation=cv2.INTER_LINEAR)
-            total += amp * n
-            amp *= 0.5
-            scale *= 2  # 1, 2, 4, 8 px
-        total = cv2.GaussianBlur(total, (0, 0), 0.8)
-        if float(total.std()) > 1e-6:
-            total = (total - total.mean()) / total.std()
-        total = np.clip(total, -2.0, 2.0)
-        sdf = sdf + roughness * total
+        # In-place normalization/scaling keeps the full-res footprint to a
+        # single accumulator (important for ~28MP native frames in Pyodide).
+        if roughness > 0:
+            ref = 2048
+            fine = np.zeros((h, w), np.float32)
+            amp, scale = 1.0, 1
+            for _ in range(4):
+                nw = max(2, ref // scale)
+                nh = max(2, ref // scale)
+                n = rng.standard_normal((nh, nw)).astype(np.float32)
+                n = cv2.resize(n, (w, h), interpolation=cv2.INTER_LINEAR)
+                n *= amp
+                fine += n
+                amp *= 0.5
+                scale *= 2  # 1, 2, 4, 8 px
+            cv2.GaussianBlur(fine, (0, 0), 0.8, dst=fine)
+            s = float(fine.std())
+            if s > 1e-6:
+                fine -= float(fine.mean())
+                fine /= s
+            fine *= roughness
+            perturb += fine
+
+        # Low-frequency undulation on a coarse grid: normalize the small grid
+        # BEFORE the upscale so we never allocate full-res normalization
+        # temporaries. This was the slow path the user hit — the previous
+        # version built several full-res float32 arrays at native resolution.
+        if waviness > 0:
+            cells = 12
+            nw = max(2, cells)
+            nh = max(2, int(round(cells * h / max(1, w))))
+            coarse = rng.standard_normal((nh, nw)).astype(np.float32)
+            s = float(coarse.std())
+            if s > 1e-6:
+                coarse -= float(coarse.mean())
+                coarse /= s
+            coarse = cv2.resize(coarse, (w, h), interpolation=cv2.INTER_CUBIC)
+            coarse *= waviness
+            perturb += coarse
+
+        # Per-edge amplitude, computed on a TINY grid (the falloffs are smooth)
+        # and upscaled once, so it adds just one full-res temporary.
+        if edge_asymmetry > 0:
+            amps = 1.0 + edge_asymmetry * rng.uniform(-1.0, 1.0, 4)
+            gw = 64
+            gh = max(2, int(round(64 * h / max(1, w))))
+            wy = np.linspace(0.0, 1.0, gh, dtype=np.float32)
+            wx = np.linspace(0.0, 1.0, gw, dtype=np.float32)
+            wtop = np.clip(1.0 - wy / 0.6, 0.0, 1.0)
+            wbot = np.clip(wy / 0.6, 0.0, 1.0)
+            wleft = np.clip(1.0 - wx / 0.6, 0.0, 1.0)
+            wright = np.clip(wx / 0.6, 0.0, 1.0)
+            denom = (wtop + wbot)[:, None] + (wleft + wright)[None, :] + 1e-6
+            wfield = ((amps[0] * wtop + amps[1] * wbot)[:, None]
+                      + (amps[2] * wleft + amps[3] * wright)[None, :]) / denom
+            wfield = cv2.resize(wfield, (w, h), interpolation=cv2.INTER_LINEAR)
+            perturb *= wfield
+
+        sdf += perturb
 
     # Soft alpha falloff; `feather` is the edge width in pixels. A smoothstep
     # keeps the centre of the transition crisp (like a real film gate) while
@@ -704,29 +752,19 @@ def _organic_mask(w, h, radius, roughness, feather, seed, square_corners=None):
     return mask
 
 
-def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
-                     feather, seed, radius_jitter=0.0,
-                     square_corner_chance=0.0):
-    """Place crop on a white canvas.
+# ---------------------------------------------------------------------------
 
-    size > 0: square `size x size` canvas, crop scaled to fit.
-    size == 0: native resolution (no resampling) with a proportional margin.
+
+def _masked_tile(crop, dw, dh, radius_frac, roughness, feather, seed,
+                 scale=1.0, radius_jitter=0.0, square_corner_chance=0.0,
+                 waviness=0.0, edge_asymmetry=0.0):
+    """Resize `crop` to (dw, dh) and return (resized_bgr, float alpha).
+
+    Pixel-sized edge params (roughness, feather, waviness) are scaled by
+    `scale` so a downscaled tile looks identical to its native export. This is
+    the shared per-tile step used by both `compose_on_white` and
+    `compose_merge_on_white`.
     """
-    ch, cw = crop.shape[:2]
-    longest = max(ch, cw)
-
-    if size and size > 0:
-        scale = (size * (1.0 - 2.0 * margin_frac)) / longest
-        dw = max(1, int(round(cw * scale)))
-        dh = max(1, int(round(ch * scale)))
-        canvas_w = canvas_h = size
-    else:
-        scale = 1.0
-        dw, dh = cw, ch
-        margin_px = int(round(margin_frac * longest))
-        canvas_w = dw + 2 * margin_px
-        canvas_h = dh + 2 * margin_px
-
     interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
     resized = cv2.resize(crop, (dw, dh), interpolation=interp)
     if resized.ndim == 2:
@@ -758,20 +796,331 @@ def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
         else:
             square_corners = {rng.choice(['tl', 'tr', 'bl', 'br'])}
 
-    # roughness/feather are defined at native scale; scale them so a downscaled
-    # output looks the same as native rather than proportionally softer.
+    # roughness/feather/waviness are defined at native scale; scale them so a
+    # downscaled output looks the same as native rather than proportionally
+    # softer. edge_asymmetry is a ratio, so it is not scaled.
     mask = _organic_mask(dw, dh, radius, roughness * scale, feather * scale,
-                         seed, square_corners)
+                         seed, square_corners, waviness * scale,
+                         edge_asymmetry)
+    alpha = (mask.astype(np.float32) / 255.0)[..., None]
+    return resized, alpha
+
+
+def compose_on_white(crop, size, margin_frac, radius_frac, roughness,
+                     feather, seed, radius_jitter=0.0,
+                     square_corner_chance=0.0, waviness=0.0,
+                     edge_asymmetry=0.0):
+    """Place crop on a white canvas.
+
+    size > 0: square `size x size` canvas, crop scaled to fit.
+    size == 0: native resolution (no resampling) with a proportional margin.
+    """
+    ch, cw = crop.shape[:2]
+    longest = max(ch, cw)
+
+    if size and size > 0:
+        scale = (size * (1.0 - 2.0 * margin_frac)) / longest
+        dw = max(1, int(round(cw * scale)))
+        dh = max(1, int(round(ch * scale)))
+        canvas_w = canvas_h = size
+    else:
+        scale = 1.0
+        dw, dh = cw, ch
+        margin_px = int(round(margin_frac * longest))
+        canvas_w = dw + 2 * margin_px
+        canvas_h = dh + 2 * margin_px
+
+    resized, alpha = _masked_tile(crop, dw, dh, radius_frac, roughness,
+                                  feather, seed, scale=scale,
+                                  radius_jitter=radius_jitter,
+                                  square_corner_chance=square_corner_chance,
+                                  waviness=waviness,
+                                  edge_asymmetry=edge_asymmetry)
 
     canvas = np.full((canvas_h, canvas_w, 3), 255, np.uint8)
     ox = (canvas_w - dw) // 2
     oy = (canvas_h - dh) // 2
 
-    alpha = (mask.astype(np.float32) / 255.0)[..., None]
     roi = canvas[oy:oy + dh, ox:ox + dw]
     blended = resized.astype(np.float32) * alpha + 255.0 * (1.0 - alpha)
     roi[:] = blended.astype(np.uint8)
     return canvas
+
+
+def _parse_layout(layout, n):
+    """Return (rows, cols) for a merge layout string.
+
+    Accepted: 'horizontal'/'h' (1 x n), 'vertical'/'v' (n x 1),
+    'grid'/'g' (2 columns), or 'grid:ROWSxCOLS'. Unknown values default to a
+    single horizontal row.
+    """
+    layout = (layout or "horizontal").strip().lower()
+    if layout in ("horizontal", "h", "row", "rows"):
+        return 1, n
+    if layout in ("vertical", "v", "column", "columns", "col", "cols"):
+        return n, 1
+    if layout in ("grid", "g"):
+        cols = 2
+        rows = max(1, (n + cols - 1) // cols)
+        return rows, cols
+    if layout.startswith("grid:") or layout.startswith("g:"):
+        spec = layout.split(":", 1)[1]
+        if "x" in spec:
+            try:
+                a, b = spec.split("x", 1)
+                rows, cols = int(a), int(b)
+            except ValueError:
+                rows, cols = 1, n
+            rows, cols = max(1, rows), max(1, cols)
+            # Grow the grid to fit the tiles if the user asked for too few cells.
+            if rows * cols < n:
+                rows = (n + cols - 1) // cols
+            return rows, cols
+    return 1, n
+
+
+def compose_merge_on_white(crops, *, size, margin_frac, gap_frac, layout,
+                           radius_frac, roughness, feather, seed,
+                           radius_jitter=0.0, square_corner_chance=0.0,
+                           waviness=0.0, edge_asymmetry=0.0,
+                           canvas_size=None, tile_params=None):
+    """Tile multiple crops onto a single white canvas.
+
+    Each crop is an already-detected/cropped tile (as returned by the per-image
+    detect -> crop_with_border step). They are normalized to a common reference
+    size so they tile cleanly, then each gets its own organic mask (with a
+    per-tile seed) and is pasted with an outer white margin and inner gaps.
+
+    size > 0: the whole collage is scaled so its longest side is `size`.
+    size == 0: native — the collage is scaled so its longest side equals a
+        single tile's longest side (a merged export matches one image's
+        footprint), and is never upscaled.
+    gap_frac: spacing between tiles, as a fraction of the common tile size.
+    layout: 'horizontal', 'vertical', 'grid', or 'grid:ROWSxCOLS'.
+    """
+    crops = [c for c in crops if c is not None]
+    n = len(crops)
+    if tile_params is None:
+        tile_params = [{} for _ in range(n)]
+    else:
+        tile_params = [tp or {} for tp in tile_params]
+    if n == 0:
+        return np.full((1, 1, 3), 255, np.uint8)
+    if n == 1:
+        tp0 = tile_params[0]
+        return compose_on_white(
+            crops[0], size, margin_frac,
+            tp0.get('radius_frac', radius_frac),
+            tp0.get('roughness', roughness), tp0.get('feather', feather),
+            seed, tp0.get('radius_jitter', radius_jitter),
+            tp0.get('square_corner_chance', square_corner_chance),
+            waviness=tp0.get('waviness', waviness),
+            edge_asymmetry=tp0.get('edge_asymmetry', edge_asymmetry))
+
+    rows, cols = _parse_layout(layout, n)
+    heights = [c.shape[0] for c in crops]
+    widths = [c.shape[1] for c in crops]
+
+    # Reference dimension: the smallest crop extent, so no tile is ever
+    # upscaled at --size 0. For a horizontal strip it's the common tile height;
+    # for a vertical strip the common width; for a grid the cell height.
+    if rows == 1:
+        ref = min(heights)
+    elif cols == 1:
+        ref = min(widths)
+    else:
+        ref = min(heights)
+
+    gap_px = gap_frac * ref
+    margin_px = margin_frac * ref
+
+    # Lay out tiles at reference scale: each tile's (dw, dh) and the overall
+    # inner extents. Horizontal/vertical strips vary one dimension; a grid uses
+    # uniform cells and contain-fits each tile (contact-sheet look).
+    if rows == 1:
+        tile_dims = [(int(round(ref * (w / h))), ref)
+                     for w, h in zip(widths, heights)]
+        inner_w = sum(t[0] for t in tile_dims) + (n - 1) * gap_px
+        inner_h = ref
+        cell_w = cell_h = None
+    elif cols == 1:
+        tile_dims = [(ref, int(round(ref * (h / w))))
+                     for w, h in zip(widths, heights)]
+        inner_w = ref
+        inner_h = sum(t[1] for t in tile_dims) + (n - 1) * gap_px
+        cell_w = cell_h = None
+    else:
+        mean_ar = float(np.mean([w / h for w, h in zip(widths, heights)]))
+        cell_w = int(round(ref * mean_ar))
+        cell_h = int(round(ref))
+        inner_w = cols * cell_w + (cols - 1) * gap_px
+        inner_h = rows * cell_h + (rows - 1) * gap_px
+        tile_dims = []
+        for w, h in zip(widths, heights):
+            s = min(cell_w / w, cell_h / h)
+            tile_dims.append((max(1, int(round(w * s))),
+                              max(1, int(round(h * s)))))
+
+    canvas_w0 = inner_w + 2.0 * margin_px
+    canvas_h0 = inner_h + 2.0 * margin_px
+
+    # The merged output uses the SAME canvas dimensions as a single export.
+    # `canvas_size=(w, h)` (from the caller) wins; otherwise an explicit
+    # `size` means a `size x size` square; otherwise (native) the smallest
+    # single tile's crop+margin canvas is used. The collage is scaled to fit
+    # inside (contain) and centred, so a merged image and a single image are
+    # interchangeable in size.
+    if canvas_size is not None:
+        canvas_w = max(1, int(round(canvas_size[0])))
+        canvas_h = max(1, int(round(canvas_size[1])))
+        upscale = True
+    elif size and size > 0:
+        canvas_w = canvas_h = int(size)
+        upscale = True
+    else:
+        ref_crop = min(crops, key=lambda c: max(c.shape[0], c.shape[1]))
+        cw_ref, ch_ref = ref_crop.shape[1], ref_crop.shape[0]
+        m = margin_frac * max(cw_ref, ch_ref)
+        canvas_w = max(1, int(round(cw_ref + 2.0 * m)))
+        canvas_h = max(1, int(round(ch_ref + 2.0 * m)))
+        upscale = False
+
+    S = min(canvas_w / canvas_w0, canvas_h / canvas_h0)
+    if not upscale:
+        S = min(1.0, S)  # native fallback never upscales
+
+    # Centre the scaled collage within the target canvas.
+    off_x = (canvas_w - canvas_w0 * S) / 2.0
+    off_y = (canvas_h - canvas_h0 * S) / 2.0
+
+    canvas = np.full((canvas_h, canvas_w, 3), 255, np.uint8)
+
+    margin_s = margin_px * S
+    gap_s = gap_px * S
+
+    # Final per-tile dimensions (rounded once, so placement stays consistent).
+    final_dims = [(max(1, int(round(dw * S))), max(1, int(round(dh * S))))
+                  for dw, dh in tile_dims]
+
+    def _paste(crop, dw, dh, ox, oy, seed_i, tp):
+        r = tp.get('radius_frac', radius_frac)
+        ro = tp.get('roughness', roughness)
+        fe = tp.get('feather', feather)
+        rj = tp.get('radius_jitter', radius_jitter)
+        sc = tp.get('square_corner_chance', square_corner_chance)
+        wv = tp.get('waviness', waviness)
+        ea = tp.get('edge_asymmetry', edge_asymmetry)
+        scale = dw / crop.shape[1] if crop.shape[1] else 1.0
+        resized, alpha = _masked_tile(crop, dw, dh, r, ro, fe, seed_i,
+                                      scale=scale, radius_jitter=rj,
+                                      square_corner_chance=sc, waviness=wv,
+                                      edge_asymmetry=ea)
+        x0, y0 = max(0, ox), max(0, oy)
+        x1, y1 = min(canvas_w, ox + dw), min(canvas_h, oy + dh)
+        if x1 <= x0 or y1 <= y0:
+            return
+        pw, ph = x1 - x0, y1 - y0
+        roi = canvas[y0:y1, x0:x1]
+        res = resized[0:ph, 0:pw]
+        al = alpha[0:ph, 0:pw]
+        roi[:] = (res.astype(np.float32) * al
+                  + 255.0 * (1.0 - al)).astype(np.uint8)
+
+    if rows == 1 or cols == 1:
+        pos = off_x + margin_s if rows == 1 else off_y + margin_s
+        for i, crop in enumerate(crops):
+            dw, dh = final_dims[i]
+            if rows == 1:
+                ox, oy = int(round(pos)), int(round(off_y + margin_s))
+            else:
+                ox, oy = int(round(off_x + margin_s)), int(round(pos))
+            seed_i = None if seed is None else seed + i * MERGE_SEED_STRIDE
+            _paste(crop, dw, dh, ox, oy, seed_i, tile_params[i])
+            pos += (dw if rows == 1 else dh) + gap_s
+    else:
+        for i, crop in enumerate(crops):
+            col, row = i % cols, i // cols
+            cell_x = off_x + margin_s + col * (cell_w * S + gap_s)
+            cell_y = off_y + margin_s + row * (cell_h * S + gap_s)
+            dw, dh = final_dims[i]
+            ox = int(round(cell_x + (cell_w * S - dw) / 2.0))
+            oy = int(round(cell_y + (cell_h * S - dh) / 2.0))
+            seed_i = None if seed is None else seed + i * MERGE_SEED_STRIDE
+            _paste(crop, dw, dh, ox, oy, seed_i, tile_params[i])
+
+    return canvas
+
+
+def process_merge(images, *, size, margin, border, radius, roughness, feather,
+                  seed, sprocket_chance, gap=0.03, layout="vertical",
+                  radius_jitter=0.0, square_corner_chance=0.0,
+                  border_jitter=0.0, max_sprocket_border=0.03,
+                  waviness=0.0, edge_asymmetry=0.0,
+                  canvas_size=None, per_image=None):
+    """Run the full pipeline on several images, tiled onto one white canvas.
+
+    `per_image` optionally lists per-tile overrides (same length as `images`):
+    dicts whose keys override the global params for that tile (border, radius,
+    roughness, feather, seed, sprocket_chance, radius_jitter,
+    square_corner_chance, border_jitter, max_sprocket_border, offsets, and
+    gate/sprocket overrides). This lets each tile in a merge be tweaked
+    independently. Returns the final BGR canvas.
+    """
+    if per_image is None:
+        per_image = [{} for _ in images]
+    tiles = []
+    tile_params = []
+    for i, img in enumerate(images):
+        if img is None:
+            continue
+        ov = per_image[i] if i < len(per_image) and per_image[i] else {}
+        portrait = img.shape[0] > img.shape[1]
+        if portrait:
+            img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        left, top, right, bot = (ov['gate_override'] if ov.get('gate_override')
+                                 is not None else detect_gate(gray))
+        seed_i = ov.get('seed', seed)
+        crop_seed = None if seed_i is None else (
+            seed_i + i * MERGE_SEED_STRIDE + 100000)
+        sprocket_edges = (ov['sprocket_override']
+                          if ov.get('sprocket_override') is not None
+                          else _sprocket_inner_edges(gray))
+        cl, ct, cr, cb = crop_with_border(
+            gray, left, top, right, bot,
+            ov.get('border', border),
+            ov.get('sprocket_chance', sprocket_chance),
+            crop_seed,
+            ov.get('border_jitter', border_jitter),
+            ov.get('max_sprocket_border', max_sprocket_border),
+            sprocket_override=sprocket_edges)
+        cl, ct, cr, cb = _nudge_crop(
+            cl, ct, cr, cb,
+            ov.get('offset_left', 0.0), ov.get('offset_top', 0.0),
+            ov.get('offset_right', 0.0), ov.get('offset_bottom', 0.0),
+            img.shape[1], img.shape[0])
+        tile = img[ct:cb, cl:cr]
+        if portrait:
+            tile = cv2.rotate(tile, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        tiles.append(tile)
+        tile_params.append({
+            'radius_frac': ov.get('radius', radius),
+            'roughness': ov.get('roughness', roughness),
+            'feather': ov.get('feather', feather),
+            'radius_jitter': ov.get('radius_jitter', radius_jitter),
+            'square_corner_chance': ov.get('square_corner_chance',
+                                           square_corner_chance),
+            'waviness': ov.get('waviness', waviness),
+            'edge_asymmetry': ov.get('edge_asymmetry', edge_asymmetry),
+        })
+
+    return compose_merge_on_white(
+        tiles, size=size, margin_frac=margin, gap_frac=gap, layout=layout,
+        radius_frac=radius, roughness=roughness, feather=feather, seed=seed,
+        radius_jitter=radius_jitter,
+        square_corner_chance=square_corner_chance,
+        waviness=waviness, edge_asymmetry=edge_asymmetry,
+        canvas_size=canvas_size, tile_params=tile_params)
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +1149,7 @@ def process_image(img, *, size, margin, border, radius, roughness, feather,
                   square_corner_chance=0.0, border_jitter=0.0,
                   max_sprocket_border=0.03, offset_left=0.0, offset_right=0.0,
                   offset_top=0.0, offset_bottom=0.0, plain=False, debug=False,
+                  waviness=0.0, edge_asymmetry=0.0,
                   gate_override=None, sprocket_override=None):
     """Run the full pipeline on an in-memory BGR image.
 
@@ -867,7 +1217,7 @@ def process_image(img, *, size, margin, border, radius, roughness, feather,
     crop = img[ct:cb, cl:cr]
     result = compose_on_white(crop, size, margin, radius, roughness,
                               feather, seed, radius_jitter,
-                              square_corner_chance)
+                              square_corner_chance, waviness, edge_asymmetry)
     if portrait:
         result = cv2.rotate(result, cv2.ROTATE_90_COUNTERCLOCKWISE)
 

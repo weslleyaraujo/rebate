@@ -12,6 +12,15 @@ export const BUILTIN_PRESETS = [
     params: { ...DEFAULTS },
   },
   {
+    name: 'Lab scan',
+    description: 'Reference edge look: low-frequency waviness and uneven, asymmetric edges.',
+    params: {
+      ...DEFAULTS,
+      waviness: 4,
+      edge_asymmetry: 0.55,
+    },
+  },
+  {
     name: 'Sprockets',
     description: 'Forces a tiny sprocket sliver on one side when the rebate is thin enough.',
     params: { ...DEFAULTS, sprocket_chance: 1 },

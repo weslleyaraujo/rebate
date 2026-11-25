@@ -470,3 +470,39 @@ class TestOffsetFlags(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReferenceLook(unittest.TestCase):
+    """Reference edge stylization: waviness + edge asymmetry."""
+
+    def test_organic_mask_waviness_changes_edge(self):
+        m0 = rebate._organic_mask(200, 120, 20, 0.5, 1.5, 1)
+        m1 = rebate._organic_mask(200, 120, 20, 0.5, 1.5, 1, waviness=6.0)
+        self.assertFalse(np.array_equal(m0, m1))
+        # The centre stays opaque and the corners stay cut away.
+        self.assertEqual(int(m1[60, 100]), 255)
+        self.assertEqual(int(m1[0, 0]), 0)
+
+    def test_process_image_with_waviness_runs(self):
+        img = np.zeros((260, 400, 3), np.uint8)
+        img[40:220, 60:340] = (120, 150, 170)
+        res = rebate.process_image(
+            img, size=0, margin=0.05, border=0.05, radius=0.05, roughness=0.5,
+            feather=1.5, seed=3, sprocket_chance=0.0, border_jitter=0.0,
+            waviness=2.0, edge_asymmetry=0.4,
+            gate_override=(60, 40, 340, 220), sprocket_override=(None, None))
+        self.assertEqual(res.image.ndim, 3)
+        self.assertEqual(res.image.shape[2], 3)
+
+    def test_reference_shortcut_sets_but_does_not_override(self):
+        ns = argparse.Namespace(reference=0.8, waviness=0.0,
+                                edge_asymmetry=0.0)
+        rebate._apply_reference_shortcut(ns, set())
+        self.assertAlmostEqual(ns.waviness, 0.8 * 6.0)
+        self.assertAlmostEqual(ns.edge_asymmetry, 0.8 * 0.8)
+        # Explicit flags win over the shortcut.
+        ns2 = argparse.Namespace(reference=0.8, waviness=1.0,
+                                 edge_asymmetry=0.0)
+        rebate._apply_reference_shortcut(ns2, {"waviness"})
+        self.assertEqual(ns2.waviness, 1.0)
+        self.assertAlmostEqual(ns2.edge_asymmetry, 0.8 * 0.8)

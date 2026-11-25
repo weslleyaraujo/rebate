@@ -16,7 +16,16 @@ export const DEFAULTS = {
   max_sprocket_border: 0.03,
   roughness: 0.5,
   feather: 1.5,
+  // Reference edge stylization (mirrors the CLI's --waviness /
+  // --edge-asymmetry). Both default to 0 = off (the original clean edge).
+  waviness: 0, // px — low-frequency edge undulation (film curl / uneven mask)
+  edge_asymmetry: 0, // 0-1 — how much each edge's roughness differs
   sprocket_chance: 0.7,
+  // Multi-image merge layout/spacing (mirrors --layout / --gap). The merge
+  // itself is driven by which frames the user ticks in the filmstrip (not a
+  // global toggle).
+  layout: 'vertical', // 'vertical' | 'horizontal' | 'grid' | 'grid:ROWSxCOLS'
+  gap: 0.03, // spacing between merged tiles (fraction of the common tile size)
   offset_left: 0,
   offset_right: 0,
   offset_top: 0,
@@ -53,6 +62,8 @@ export const PARAM_GROUPS = [
       { key: 'square_corner_chance', label: 'Square corner chance', min: 0, max: 1, step: 0.01, help: 'Probability (0–1) that one corner, or two corners on the same side, are left squared off instead of rounded.' },
       { key: 'roughness', label: 'Roughness (px)', min: 0, max: 20, step: 0.1, help: 'Edge irregularity in pixels. 0 = perfectly straight edges; higher = more wavy, hand-cut look.' },
       { key: 'feather', label: 'Feather (px)', min: 0, max: 30, step: 0.1, help: 'Edge softness in pixels. 0 = hard edge; higher = a softer, feathered transition to white.' },
+      { key: 'waviness', label: 'Waviness (px)', min: 0, max: 20, step: 0.1, advanced: true, help: 'Slow, low-frequency edge undulation in pixels (film curl / uneven lab mask), on top of the fine roughness. 0 = straight edges.' },
+      { key: 'edge_asymmetry', label: 'Edge asymmetry', min: 0, max: 1, step: 0.01, advanced: true, help: '0–1 how much each edge’s roughness/waviness differs from the others. 0 = even; 1 = each side is randomly quite different.' },
     ],
   },
 ];
@@ -88,7 +99,7 @@ export function mergeParams(base, override) {
 // browser previews on a downscaled copy, pixel-sized params (offsets,
 // roughness, feather) must be scaled by the same factor so the preview matches
 // the eventual native export. Fraction params are scale-free.
-const PX_PARAMS = new Set(['offset_left', 'offset_right', 'offset_top', 'offset_bottom', 'roughness', 'feather']);
+const PX_PARAMS = new Set(['offset_left', 'offset_right', 'offset_top', 'offset_bottom', 'roughness', 'feather', 'waviness']);
 
 export function scaleParamsForPreview(params, factor) {
   const out = { ...params };

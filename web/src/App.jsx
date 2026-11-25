@@ -4,6 +4,8 @@ import Filmstrip from './components/Filmstrip.jsx';
 import ParamsPanel from './components/ParamsPanel.jsx';
 import FramePanel from './components/FramePanel.jsx';
 import Preview from './components/Preview.jsx';
+import MergeBar from './components/MergeBar.jsx';
+import GroupPreview from './components/GroupPreview.jsx';
 import Slideshow from './components/Slideshow.jsx';
 import ExportBar from './components/ExportBar.jsx';
 import { DEFAULTS, mergeParams, scaleParamsForPreview, suffixFor } from './lib/params.js';
@@ -18,6 +20,8 @@ import {
   readFileAsArrayBuffer,
   blobToArrayBuffer,
   downscaleFile,
+  downscaleFileToFactor,
+  loadImage,
   objectUrlFor,
   downloadBlob,
   downloadBuffer,
@@ -27,7 +31,7 @@ import {
   isImageFile,
   extractImagesFromZip,
 } from './lib/imageUtil.js';
-import { initWorker, processImage } from './lib/workerClient.js';
+import { initWorker, processImage, processMerge } from './lib/workerClient.js';
 
 const PREVIEW_MAX_SIDE = 2560;
 const WORKSPACE_KEY = 'rebate.workspace.v1';
@@ -77,7 +81,11 @@ export default function App() {
   const [lockedSnapshots, setLockedSnapshots] = useState({});
   const [restoredIds, setRestoredIds] = useState(() => new Set());
   const [activePreset, setActivePreset] = useState(null); // { name, params } | null
+  const [fullResIds, setFullResIds] = useState(() => new Set());
   const [bannerHidden, setBannerHidden] = useState(false);
+  const [groups, setGroups] = useState([]);
+  const [mergePreviews, setMergePreviews] = useState({});
+  const [activeGroupId, setActiveGroupId] = useState(null);
   const [theme, setTheme] = useState(() => {
     try {
       return localStorage.getItem(THEME_KEY) || 'system';
@@ -94,10 +102,17 @@ export default function App() {
   paramsRef.current = globalParams;
   const overridesRef = useRef(overrides);
   overridesRef.current = overrides;
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
+  const mergePreviewsRef = useRef(mergePreviews);
+  mergePreviewsRef.current = mergePreviews;
+  const activeGroupIdRef = useRef(activeGroupId);
+  activeGroupIdRef.current = activeGroupId;
   const selectedRef = useRef(selectedId);
   selectedRef.current = selectedId;
   const seqRef = useRef(new Map());
   const debounceRef = useRef(new Map());
+  const mergePreviewSeqRef = useRef(0);
   const dragDepthRef = useRef(0);
   const historyRef = useRef({
     stack: [{ globalParams: DEFAULTS, overrides: {} }],
@@ -114,6 +129,8 @@ export default function App() {
   editorModeRef.current = editorMode;
   const slideshowRef = useRef(slideshow);
   slideshowRef.current = slideshow;
+  const fullResIdsRef = useRef(fullResIds);
+  fullResIdsRef.current = fullResIds;
   const savedOverridesRef = useRef({}); // filename -> overrides (restored on upload)
   const savedLockedRef = useRef(new Set()); // filenames locked in a previous session
   const savedLockedSnapshotsRef = useRef({}); // filename -> locked param snapshot
@@ -239,6 +256,184 @@ export default function App() {
     return { ...params, seed };
   }, []);
 
+  // ---- merge (pick frames to tile together) ----
+
+  // Target canvas for a merged group: when Canvas size > 0 it's a size x size
+  // square; when 0 (native) it's the average width/height of every uploaded
+  // frame (so a merge matches a single frame's footprint). `factor` scales it
+  // for a downscaled preview.
+  const mergeCanvasSizeFor = useCallback(async (factor = 1) => {
+    const size = paramsRef.current.size;
+    if (size && size > 0) {
+      return [
+        Math.max(1, Math.round(size * factor)),
+        Math.max(1, Math.round(size * factor)),
+      ];
+    }
+    const imgs = imagesRef.current;
+    if (!imgs.length) return null;
+    let sumW = 0;
+    let sumH = 0;
+    for (const im of imgs) {
+      const { img, url } = await loadImage(im.file);
+      sumW += img.naturalWidth;
+      sumH += img.naturalHeight;
+      URL.revokeObjectURL(url);
+    }
+    const n = imgs.length;
+    return [
+      Math.max(1, Math.round((sumW / n) * factor)),
+      Math.max(1, Math.round((sumH / n) * factor)),
+    ];
+  }, []);
+
+  // Per-tile params for a merge: each frame keeps its own effective params
+  // (roll params + per-frame overrides), so tiles can be tweaked independently.
+  const buildPerImage = useCallback(
+    (frames, factor, pin) => {
+      return frames.map((f) => {
+        let p = effectiveParams(f.id);
+        if (pin) p = pinDetectionFromPreview(f, p);
+        p = resolveSeed(f.id, p);
+        return scaleParamsForPreview(p, factor);
+      });
+    },
+    [effectiveParams, resolveSeed],
+  );
+
+  // Generate a fast, downscaled merged preview for one group.
+  const generateMergePreview = useCallback(async (groupId, frameIds) => {
+    const seq = mergePreviewSeqRef.current + 1;
+    mergePreviewSeqRef.current = seq;
+
+    setMergePreviews((prev) => ({
+      ...prev,
+      [groupId]: {
+        url: prev[groupId]?.url ?? null,
+        status: 'processing',
+        error: null,
+      },
+    }));
+
+    try {
+      const imgs = imagesRef.current;
+      const frames = frameIds
+        .map((id) => imgs.find((im) => im.id === id))
+        .filter(Boolean);
+      if (frames.length < 2) return;
+
+      // One common downscale factor for every frame in the group.
+      let globalMax = 1;
+      for (const f of frames) {
+        const { img, url } = await loadImage(f.file);
+        globalMax = Math.max(globalMax, img.naturalWidth, img.naturalHeight);
+        URL.revokeObjectURL(url);
+      }
+      const factor = globalMax > PREVIEW_MAX_SIDE ? PREVIEW_MAX_SIDE / globalMax : 1;
+
+      const buffers = [];
+      for (const f of frames) {
+        const { buffer } = await downscaleFileToFactor(f.file, factor);
+        buffers.push(buffer);
+      }
+
+      let params = { ...paramsRef.current };
+      params = scaleParamsForPreview(params, factor);
+      params.size = params.size > 0 ? Math.round(params.size * factor) : 0;
+      params.quality = 100;
+      params.debug = false;
+      const canvasSize = await mergeCanvasSizeFor(factor);
+      if (canvasSize) params.canvas_size = canvasSize;
+      params.per_image = buildPerImage(frames, factor, false);
+
+      const result = await processMerge(buffers, params);
+      if (mergePreviewSeqRef.current !== seq) return; // stale result
+
+      setMergePreviews((prev) => {
+        if (prev[groupId]?.url) URL.revokeObjectURL(prev[groupId].url);
+        return {
+          ...prev,
+          [groupId]: {
+            url: objectUrlFor(result.imageBuffer, result.imageMime),
+            status: 'done',
+            error: null,
+          },
+        };
+      });
+    } catch (e) {
+      if (mergePreviewSeqRef.current === seq) {
+        setMergePreviews((prev) => ({
+          ...prev,
+          [groupId]: { ...(prev[groupId] || {}), status: 'error', error: e.message },
+        }));
+      }
+    }
+  }, [mergeCanvasSizeFor, buildPerImage]);
+
+  // Merge two frames (or add a frame to an existing group) via drag-drop.
+  const mergeFrames = useCallback(
+    (sourceId, targetId) => {
+      const imgs = imagesRef.current;
+      const src = imgs.find((im) => im.id === sourceId);
+      if (!src) return;
+
+      const existing = groupsRef.current.find((g) => g.id === targetId);
+      let members = existing ? [...existing.frameIds] : [sourceId];
+      if (!members.includes(sourceId)) members.push(sourceId);
+      if (!existing && targetId && imgs.find((im) => im.id === targetId)) {
+        members.push(targetId);
+      }
+
+      // Dedupe + keep filmstrip order.
+      const order = new Map(imgs.map((im, i) => [im.id, i]));
+      const sorted = [...new Set(members)].sort(
+        (a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0),
+      );
+      if (sorted.length < 2) return;
+
+      const gid = existing ? existing.id : `g-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      setGroups((prev) => {
+        // A frame lives in at most one group: drop it from the others first.
+        const others = prev
+          .filter((g) => g.id !== gid)
+          .map((g) => ({ ...g, frameIds: g.frameIds.filter((id) => id !== sourceId) }))
+          .filter((g) => g.frameIds.length >= 2);
+        return [...others, { id: gid, frameIds: sorted }];
+      });
+      setActiveGroupId(gid);
+      setSelectedId(sourceId);
+      setEditorMode(false);
+      generateMergePreview(gid, sorted);
+    },
+    [generateMergePreview],
+  );
+
+  const selectGroup = useCallback(
+    (id) => {
+      setActiveGroupId(id);
+      setEditorMode(false);
+      const g = groupsRef.current.find((gr) => gr.id === id);
+      if (g) {
+        setSelectedId(g.frameIds[0] ?? null);
+        if (!mergePreviewsRef.current[id]?.url) {
+          generateMergePreview(id, g.frameIds);
+        }
+      }
+    },
+    [generateMergePreview],
+  );
+
+  const removeMergeGroup = useCallback((id) => {
+    setGroups((prev) => prev.filter((g) => g.id !== id));
+    setMergePreviews((prev) => {
+      const n = { ...prev };
+      if (n[id]?.url) URL.revokeObjectURL(n[id].url);
+      delete n[id];
+      return n;
+    });
+    if (activeGroupIdRef.current === id) setActiveGroupId(null);
+  }, []);
+
   const runPreview = useCallback(
     async (imageEntry, forceFullRes = false) => {
       const id = imageEntry.id;
@@ -301,7 +496,7 @@ export default function App() {
     (id) => {
       if (lockedIdsRef.current.has(id)) return;
       const img = imagesRef.current.find((im) => im.id === id);
-      if (img) runPreview(img);
+      if (img) runPreview(img, fullResIdsRef.current.has(id));
     },
     [runPreview],
   );
@@ -509,6 +704,11 @@ export default function App() {
     const next = imagesRef.current.filter((im) => im.id !== id);
     savedOrderRef.current = next.map((im) => im.name);
     setImages(next);
+    setFullResIds((prev) => {
+      const n = new Set(prev);
+      n.delete(id);
+      return n;
+    });
     if (selectedRef.current === id) {
       setSelectedId(next[0]?.id ?? null);
     }
@@ -517,17 +717,30 @@ export default function App() {
       delete n[id];
       return n;
     });
+    // Remove the frame from any merge group it belonged to.
+    setGroups((prev) =>
+      prev
+        .map((g) => ({ ...g, frameIds: g.frameIds.filter((fid) => fid !== id) }))
+        .filter((g) => g.frameIds.length >= 2),
+    );
   }, []);
 
-  // Drag-to-reorder in the filmstrip. Reorders the roll in place (which also
-  // drives export + slideshow order) and keeps the saved order in sync.
-  const onReorder = useCallback((from, to) => {
-    const arr = [...imagesRef.current];
-    if (from < 0 || to < 0 || from >= arr.length || to >= arr.length) return;
-    const [moved] = arr.splice(from, 1);
-    arr.splice(to, 0, moved);
-    savedOrderRef.current = arr.map((im) => im.name);
-    setImages(arr);
+  // Move a frame before/after another frame in the filmstrip order.
+  const onMove = useCallback((fromId, targetId, placement) => {
+    setImages((prev) => {
+      const arr = [...prev];
+      const from = arr.findIndex((im) => im.id === fromId);
+      if (from < 0) return prev;
+      const [moved] = arr.splice(from, 1);
+      const idx = arr.findIndex((im) => im.id === targetId);
+      if (idx < 0) {
+        arr.splice(from, 0, moved);
+      } else {
+        arr.splice(placement === 'before' ? idx : idx + 1, 0, moved);
+      }
+      savedOrderRef.current = arr.map((im) => im.name);
+      return arr;
+    });
   }, []);
 
   const moveSelection = useCallback((dir) => {
@@ -573,8 +786,14 @@ export default function App() {
       }));
       scheduleHistoryCommit();
       debouncedRePreview(imageId);
+      // If we're inside a merge group, refresh its merged preview too.
+      const gid = activeGroupIdRef.current;
+      if (gid) {
+        const g = groupsRef.current.find((gr) => gr.id === gid);
+        if (g) generateMergePreview(gid, g.frameIds);
+      }
     },
-    [scheduleHistoryCommit, debouncedRePreview],
+    [scheduleHistoryCommit, debouncedRePreview, generateMergePreview],
   );
 
   // Detection gate/sprocket changes from the visual editor only update the
@@ -694,11 +913,19 @@ export default function App() {
       clearTimeout(debounceRef.current.get(id));
       debounceRef.current.delete(id);
     }
-    const img = imagesRef.current.find((im) => im.id === id);
-    if (img && img.previewFactor === 1) {
-      // Currently full-res -> drop back to the fast 2560px preview.
-      runPreview(img, false);
+    if (fullResIdsRef.current.has(id)) {
+      // Currently full-res -> drop back to the fast 2560px preview and stop
+      // forcing full-res on subsequent param changes.
+      setFullResIds((prev) => {
+        const n = new Set(prev);
+        n.delete(id);
+        return n;
+      });
+      const img = imagesRef.current.find((im) => im.id === id);
+      if (img) runPreview(img, false);
     } else {
+      // Remember this frame stays at native resolution across future edits.
+      setFullResIds((prev) => new Set(prev).add(id));
       runFullResById(id);
     }
   }, [runPreview, runFullResById]);
@@ -715,10 +942,16 @@ export default function App() {
         debounceRef.current.delete(id);
       }
       runPreviewById(id);
+      // If we were editing a frame inside a merge group, refresh the merged view.
+      const gid = activeGroupIdRef.current;
+      if (gid) {
+        const g = groupsRef.current.find((gr) => gr.id === gid);
+        if (g) generateMergePreview(gid, g.frameIds);
+      }
     } else {
       setEditorMode(true);
     }
-  }, [runPreviewById]);
+  }, [runPreviewById, generateMergePreview]);
 
   const onOpenEditor = useCallback(() => {
     setEditorMode(true);
@@ -843,21 +1076,29 @@ export default function App() {
 
   const onExport = useCallback(async () => {
     const imgs = imagesRef.current;
+    const groups = groupsRef.current;
     if (!imgs.length) return;
     setExporting(true);
     const entries = [];
     try {
-      for (let i = 0; i < imgs.length; i++) {
-        const img = imgs[i];
-        setExportProgress({ done: i, total: imgs.length });
+      // Export EVERY frame individually, plus one merged image per merge group.
+      const total = imgs.length + groups.length;
+      let done = 0;
+
+      // 1. Individual frames (single-frame path, for every frame).
+      for (const img of imgs) {
+        setExportProgress({ done, total });
         const buf = await readFileAsArrayBuffer(img.file);
         const params = pinDetectionFromPreview(
           img,
           resolveSeed(img.id, effectiveParams(img.id)), // native, unscaled
         );
         const result = await processImage(buf, params);
-        const name = baseName(img.name) + suffixFor(params);
-        entries.push({ name, buffer: result.imageBuffer, mime: result.imageMime });
+        entries.push({
+          name: baseName(img.name) + suffixFor(params),
+          buffer: result.imageBuffer,
+          mime: result.imageMime,
+        });
         if (params.debug && result.debugBuffer) {
           entries.push({
             name: baseName(img.name) + '.debug.jpg',
@@ -865,8 +1106,34 @@ export default function App() {
             mime: 'image/jpeg',
           });
         }
+        done += 1;
       }
-      setExportProgress({ done: imgs.length, total: imgs.length });
+
+      // 2. Each merge group -> one merged image.
+      const canvasSize = await mergeCanvasSizeFor(1);
+      for (const g of groups) {
+        setExportProgress({ done, total });
+        const frames = g.frameIds
+          .map((id) => imgs.find((im) => im.id === id))
+          .filter(Boolean);
+        if (frames.length >= 2) {
+          const buffers = [];
+          for (const f of frames) buffers.push(await readFileAsArrayBuffer(f.file));
+          const params = { ...paramsRef.current };
+          if (canvasSize) params.canvas_size = canvasSize;
+          params.per_image = buildPerImage(frames, 1, true);
+          const result = await processMerge(buffers, params);
+          const ext = params.format === 'png' ? '.png' : '.jpg';
+          entries.push({
+            name: `merge-${done - imgs.length + 1}${ext}`,
+            buffer: result.imageBuffer,
+            mime: result.imageMime,
+          });
+        }
+        done += 1;
+      }
+
+      setExportProgress({ done: total, total });
       const d = new Date();
       const pad = (n) => String(n).padStart(2, '0');
       const zipName =
@@ -879,7 +1146,7 @@ export default function App() {
       setExporting(false);
       setExportProgress(null);
     }
-  }, [effectiveParams, resolveSeed]);
+  }, [effectiveParams, resolveSeed, mergeCanvasSizeFor, buildPerImage]);
 
   // ---- paste (⌘/Ctrl+V an image copied from another tab, e.g. Google Photos) ----
 
@@ -1156,13 +1423,23 @@ export default function App() {
             <div className="flex-1 flex flex-col p-6">
               <DropZone onFiles={onFiles} />
             </div>
+          ) : activeGroupId && !editorMode && mergePreviews[activeGroupId] ? (
+            <GroupPreview
+              preview={mergePreviews[activeGroupId]}
+              onBack={() => {
+                setActiveGroupId(null);
+                setEditorMode(false);
+              }}
+              onEditDetection={() => setEditorMode(true)}
+              editingFrameName={selectedImage ? selectedImage.name : null}
+            />
           ) : (
             <Preview
               image={selectedImage}
               params={selectedEffective}
               viewMode={viewMode}
               onViewMode={setViewMode}
-              fullRes={selectedImage ? selectedImage.previewFactor === 1 : false}
+              fullRes={selectedImage ? fullResIds.has(selectedImage.id) : false}
               onToggleFullRes={onToggleFullRes}
               editorMode={editorMode}
               onToggleEditor={onToggleEditor}
@@ -1179,12 +1456,30 @@ export default function App() {
             />
           )}
 
+          <MergeBar
+            layout={globalParams.layout}
+            gap={globalParams.gap}
+            onChange={onGlobalChange}
+          />
+
           <Filmstrip
             images={images}
+            groups={groups}
+            mergePreviews={mergePreviews}
+            activeGroupId={activeGroupId}
             selectedId={selectedId}
-            onSelect={setSelectedId}
+            onSelect={(id) => {
+              setSelectedId(id);
+              setActiveGroupId(null);
+              setEditorMode(false);
+            }}
+            onSelectMember={(id) => setSelectedId(id)}
+            onSelectGroup={selectGroup}
+            onBackGroup={() => setActiveGroupId(null)}
+            onRemoveGroup={removeMergeGroup}
             onDelete={onDeleteImage}
-            onReorder={onReorder}
+            onMove={onMove}
+            onMerge={mergeFrames}
           />
         </main>
 

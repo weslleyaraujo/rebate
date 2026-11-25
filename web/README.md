@@ -76,7 +76,16 @@ Deploy `web/dist/` to any static host. `base: './'` is already set in
    lines instead of typing pixel numbers; the red crop overlay follows
    automatically. **Done** applies and regenerates. Presets are stored in
    `localStorage` and can be exported/imported as JSON.
-4. **Export** — **Download** re-runs every frame at native resolution and
+4. **Merge** (optional) — drag one filmstrip frame onto another to merge them
+   (drop in the middle of a frame merges; drop near the edge reorders). Each
+   merge becomes a **group** entry in the filmstrip. Click a group to open it:
+   you get a live merged preview and a sub-strip of its frames, so you can pick
+   any frame and tweak its params individually. **Download** exports every group
+   as one merged image and every ungrouped frame individually, bundled into a
+   ZIP. Layout/gap live in the Merge bar; a merged group uses the same canvas as
+   a single image (average of uploaded frames when Canvas size is 0, otherwise
+   the size x size square).
+5. **Export** — **Download** re-runs every frame at native resolution and
    bundles the results into a timestamped ZIP (or download a single frame from
    the Frame panel). If "debug" is enabled, each frame also emits a
    `.debug.jpg` with gate/crop rectangles. A **Slideshow** button (or `F`) opens

@@ -43,7 +43,7 @@ export default function ExportBar({
             step={100}
             unit="0 = native"
             onChange={(v) => onChange('size', v)}
-            help="Square canvas size; 0 = native resolution (no resampling)."
+            help="Square canvas size for single frames; 0 = native resolution (no resampling). Merged groups are scaled to a single frame's native size when this is 0."
           />
         </div>
 

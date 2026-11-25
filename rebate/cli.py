@@ -83,12 +83,30 @@ _OPTION_SPECS = [
     ("sprocket_chance", "--sprocket-chance", float, 0.7,
      "probability (0-1) that a tiny sliver of sprocket holes is visible on "
      "at most one side (top or bottom) (default 0.7)"),
+    ("merge", "--merge", bool, False,
+     "tile all input images onto a single canvas instead of processing each "
+     "one individually (needs at least two inputs)"),
+    ("layout", "--layout", str, "vertical",
+     "merge layout: 'vertical' (default), 'horizontal', 'grid' (2 columns), "
+     "or 'grid:ROWSxCOLS'"),
+    ("gap", "--gap", float, 0.03,
+     "spacing between merged tiles, as a fraction of the common tile size "
+     "(default 0.03)"),
     ("plain", "--plain", bool, False,
      "crop just the 3:2 image with no border and no white canvas"),
     ("debug", "--debug", bool, False,
      "also save an annotated debug image"),
     ("suffix", "--suffix", str, ".bordered.jpg",
      "output filename suffix (default .bordered.jpg)"),
+    ("reference", "--reference", float, 0.0,
+     "master intensity 0-1 for the reference edge look: turns on low-"
+     "frequency edge waviness and per-edge asymmetry. Individual --waviness/"
+     "--edge-asymmetry flags override it (default 0 = off)"),
+    ("waviness", "--waviness", float, 0.0,
+     "low-frequency edge undulation in px (0 = straight; default 0)"),
+    ("edge_asymmetry", "--edge-asymmetry", float, 0.0,
+     "0-1 how much each edge's roughness/waviness differs from the others "
+     "(0 = even; default 0)"),
 ]
 
 _DEST_TO_FLAG = {dest: flag for dest, flag, _, _, _ in _OPTION_SPECS}
@@ -165,6 +183,25 @@ def _explicit_option_names(argv):
         if any(tok == flag or tok.startswith(flag + "=") for tok in argv):
             names.add(dest)
     return names
+
+
+def _apply_reference_shortcut(args, explicit):
+    """--reference N is a shortcut for the reference edge look.
+
+    It sets the individual edge flags to reference-scaled values unless the
+    user passed that flag explicitly, so e.g. `--reference 0.7 --waviness 2`
+    keeps the explicit waviness while enabling edge asymmetry.
+    """
+    ref = getattr(args, "reference", 0.0) or 0.0
+    if ref <= 0:
+        return
+    presets = {
+        "waviness": ref * 6.0,
+        "edge_asymmetry": ref * 0.8,
+    }
+    for dest, value in presets.items():
+        if dest not in explicit:
+            setattr(args, dest, value)
 
 
 def config_command(argv):
@@ -302,11 +339,50 @@ def _save_image(path, img, quality=None):
     return True
 
 
+def process_merge_files(paths, out_dir, size, margin_frac, border_frac,
+                        radius_frac, roughness, feather, seed, quality,
+                        sprocket_chance, radius_jitter, square_corner_chance,
+                        border_jitter, max_sprocket_border, gap, layout,
+                        waviness=0.0, edge_asymmetry=0.0,
+                        suffix=".bordered.jpg"):
+    """Read several images, tile them onto one canvas, and write the result."""
+    images = []
+    stems = []
+    for path in paths:
+        img = cv2.imread(path, cv2.IMREAD_COLOR)
+        if img is None:
+            print(f"!! cannot read {path}", file=sys.stderr)
+            return None
+        images.append(img)
+        stems.append(os.path.splitext(os.path.basename(path))[0])
+
+    result = core.process_merge(
+        images, size=size, margin=margin_frac, border=border_frac,
+        radius=radius_frac, roughness=roughness, feather=feather, seed=seed,
+        sprocket_chance=sprocket_chance, radius_jitter=radius_jitter,
+        square_corner_chance=square_corner_chance,
+        border_jitter=border_jitter, max_sprocket_border=max_sprocket_border,
+        gap=gap, layout=layout,
+        waviness=waviness, edge_asymmetry=edge_asymmetry,
+    )
+
+    name = "_".join(stems) if len(stems) <= 3 else "merged"
+    out_name = name + suffix
+    out_path = os.path.join(out_dir, out_name)
+    _save_image(out_path, result, quality)
+
+    h, w = result.shape[:2]
+    print(f"  {', '.join(os.path.basename(p) for p in paths)}")
+    print(f"    merge {layout} ({w}x{h}) -> {out_path}")
+    return out_path
+
+
 def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
             roughness, feather, seed, quality, sprocket_chance,
             radius_jitter, square_corner_chance=0.0, border_jitter=0.0,
             max_sprocket_border=0.03, offset_left=0.0, offset_right=0.0,
             offset_top=0.0, offset_bottom=0.0, plain=False, debug=False,
+            waviness=0.0, edge_asymmetry=0.0,
             suffix=".bordered.jpg"):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
@@ -322,6 +398,7 @@ def process(path, out_dir, size, margin_frac, border_frac, radius_frac,
         offset_left=offset_left, offset_right=offset_right,
         offset_top=offset_top, offset_bottom=offset_bottom,
         plain=plain, debug=debug,
+        waviness=waviness, edge_asymmetry=edge_asymmetry,
     )
 
     if plain:
@@ -392,8 +469,32 @@ def main():
     # Resolve the --offset-x / --offset-y shorthand into the four edge
     # offsets (a specific edge flag wins over the combo).
     explicit = _explicit_option_names(remaining)
+    _apply_reference_shortcut(args, explicit)
     offset_left, offset_right, offset_top, offset_bottom = _resolve_offsets(
         args, explicit)
+
+    # --merge tiles all inputs onto one canvas. Offsets are per-scan nudges and
+    # --plain is a single-image concept, so neither combines with merge.
+    if args.merge:
+        if args.plain:
+            print("!! --merge and --plain cannot be combined", file=sys.stderr)
+            return 1
+        if len(args.inputs) < 2:
+            print("!! --merge needs at least two input images", file=sys.stderr)
+            return 1
+        if _offsets_active(args, explicit, offset_left, offset_right,
+                           offset_top, offset_bottom):
+            print("!! --offset-* is not supported with --merge", file=sys.stderr)
+            return 1
+        os.makedirs(args.out, exist_ok=True)
+        process_merge_files(args.inputs, args.out, args.size, args.margin,
+                      args.border, args.radius, args.roughness, args.feather,
+                      args.seed, args.quality, args.sprocket_chance,
+                      args.radius_jitter, args.square_corner_chance,
+                      args.border_jitter, args.max_sprocket_border,
+                      args.gap, args.layout,
+                      args.waviness, args.edge_asymmetry, args.suffix)
+        return 0
 
     # Offsets are deterministic nudges, so they need a fixed base crop. If
     # any offset is in effect, force --border-jitter to 0 (when the user did
@@ -417,7 +518,7 @@ def main():
                 args.square_corner_chance, args.border_jitter,
                 args.max_sprocket_border, offset_left, offset_right,
                 offset_top, offset_bottom, args.plain, args.debug,
-                args.suffix)
+                args.waviness, args.edge_asymmetry, args.suffix)
     return 0
 
 

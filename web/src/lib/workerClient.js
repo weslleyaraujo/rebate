@@ -89,6 +89,28 @@ export function processImage(buffer, params) {
   });
 }
 
+/**
+ * Tile several image buffers onto one canvas (merge mode). Resolves with
+ * { imageBuffer, imageMime, meta }.
+ */
+export function processMerge(buffers, params) {
+  const w = ensureWorker();
+  const id = `merge-${nextId++}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pending.has(id)) {
+        pending.delete(id);
+        reject(new Error('Timed out waiting for the worker — reload and retry'));
+      }
+    }, PROCESS_TIMEOUT_MS);
+    pending.set(id, {
+      resolve: (msg) => { clearTimeout(timer); resolve(msg); },
+      reject: (err) => { clearTimeout(timer); reject(err); },
+    });
+    w.postMessage({ type: 'processMerge', id, buffers, params }, buffers);
+  });
+}
+
 export function isWorkerReady() {
   return worker != null;
 }

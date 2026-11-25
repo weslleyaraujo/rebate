@@ -100,6 +100,8 @@ def _do(in_id, ext, quality, params_json):
         offset_bottom=params['offset_bottom'],
         plain=params['plain'],
         debug=params['debug'],
+        waviness=params['waviness'],
+        edge_asymmetry=params['edge_asymmetry'],
         gate_override=params.get('gate_override'),
         sprocket_override=params.get('sprocket_override'),
     )
@@ -123,6 +125,40 @@ def _do(in_id, ext, quality, params_json):
     }
     open(f'${HOME}/meta_{in_id}.json', 'w').write(json.dumps(meta))
     return {'out_path': out_path, 'dbg_path': dbg_path}
+
+def _do_merge(in_id, count, ext, quality, params_json):
+    import rebate_core, json
+    params = json.loads(params_json)
+    images = []
+    for i in range(count):
+        data = open(f'${HOME}/merge_{in_id}_{i}', 'rb').read()
+        images.append(rebate_core.decode_image(data))
+    res = rebate_core.process_merge(
+        images,
+        size=params['size'],
+        margin=params['margin'],
+        border=params['border'],
+        radius=params['radius'],
+        roughness=params['roughness'],
+        feather=params['feather'],
+        seed=params['seed'],
+        sprocket_chance=params['sprocket_chance'],
+        radius_jitter=params['radius_jitter'],
+        square_corner_chance=params['square_corner_chance'],
+        border_jitter=params['border_jitter'],
+        max_sprocket_border=params['max_sprocket_border'],
+        gap=params['gap'],
+        layout=params['layout'],
+        waviness=params['waviness'],
+        edge_asymmetry=params['edge_asymmetry'],
+        canvas_size=params.get('canvas_size'),
+        per_image=params.get('per_image'),
+    )
+    out_path = f'${HOME}/mergeout_{in_id}{ext}'
+    open(out_path, 'wb').write(rebate_core.encode_image(res, ext, quality))
+    meta = {'shape': list(res.shape)}
+    open(f'${HOME}/mergemeta_{in_id}.json', 'w').write(json.dumps(meta))
+    return {'out_path': out_path}
 `);
 
     post(true, { type: 'ready' });
@@ -193,6 +229,52 @@ self.onmessage = async (event) => {
         imageMime,
         debugBuffer,
         debugMime: 'image/jpeg',
+        meta,
+      }, transfer);
+      return;
+    }
+
+    if (msg.type === 'processMerge') {
+      const py = await ensurePyodide();
+      const { id, buffers, params } = msg;
+      const ext = params.format === 'png' ? '.png' : '.jpg';
+
+      for (let i = 0; i < buffers.length; i++) {
+        py.FS.writeFile(`${HOME}/merge_${id}_${i}`, new Uint8Array(buffers[i]));
+      }
+      py.globals.set('_in_id', id);
+      py.globals.set('_count', buffers.length);
+      py.globals.set('_ext', ext);
+      py.globals.set('_quality', params.quality ?? 100);
+      py.globals.set('_params_json', JSON.stringify(params));
+
+      py.runPython('_do_merge(_in_id, _count, _ext, _quality, _params_json)');
+
+      const outPath = `${HOME}/mergeout_${id}${ext}`;
+      const imageBytes = py.FS.readFile(outPath);
+      const imageMime = ext === '.png' ? 'image/png' : 'image/jpeg';
+
+      const metaText = py.FS.readFile(`${HOME}/mergemeta_${id}.json`, { encoding: 'utf8' });
+      const meta = JSON.parse(metaText);
+
+      for (let i = 0; i < buffers.length; i++) {
+        try { py.FS.unlink(`${HOME}/merge_${id}_${i}`); } catch { /* ignore */ }
+      }
+      for (const p of [outPath, `${HOME}/mergemeta_${id}.json`]) {
+        try { py.FS.unlink(p); } catch { /* ignore */ }
+      }
+
+      const transfer = [];
+      const imageBuffer = imageBytes.slice().buffer;
+      transfer.push(imageBuffer);
+
+      post(true, {
+        type: 'result',
+        id,
+        imageBuffer,
+        imageMime,
+        debugBuffer: null,
+        debugMime: null,
         meta,
       }, transfer);
       return;
